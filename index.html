@@ -41,11 +41,12 @@
         /* Check Popup Effect */
         #check-effect {
             position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) scale(0.5);
-            font-size: 3rem; font-weight: 900; color: #facc15; text-shadow: 0 0 20px #eab308;
+            font-size: 2.8rem; font-weight: 900; color: #facc15; text-shadow: 0 0 20px #eab308;
             opacity: 0; pointer-events: none; z-index: 30; transition: transform 0.2s, opacity 0.2s;
+            text-align: center;
         }
         #check-effect.active {
-            transform: translate(-50%, -50%) scale(1.2); opacity: 1;
+            transform: translate(-50%, -50%) scale(1.1); opacity: 1;
         }
 
         /* Shot / Pass Meter UI */
@@ -86,11 +87,11 @@
     </div>
 
     <div id="status-banner">
-        WASD: Move | Mouse: Aim Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot Mode
+        WASD: Move | Mouse: Aim Target & Stick | Space: Pass/Check | F: Bullet-Time Shot Mode
     </div>
 
     <div id="shot-clock-ui">1.0s</div>
-    <div id="check-effect">CHECKED!</div>
+    <div id="check-effect">BALL DISLODGED!</div>
 
     <div id="meter-container">
         <div id="meter-target"></div>
@@ -101,9 +102,9 @@
     <div id="canvas-container"></div>
 
 <script>
-// --- ENGINE & GAME CONSTANTS ---
+// --- CONSTANTS & CONFIG ---
 const FIELD_W = 60, FIELD_L = 110, HALF_L = FIELD_L / 2;
-const MIN_PLAYER_DIST = 1.6; // Prevents clipping inside each other
+const MIN_PLAYER_DIST = 1.6;
 let period = 1, clockTime = 120, userScore = 0, aiScore = 0;
 let gameState = "OFFENSE"; // OFFENSE, SHOT_MODE, DEFENSE
 let meterPower = 0, meterCharging = false, meterDir = 1;
@@ -156,7 +157,7 @@ const field = new THREE.Mesh(
 field.rotation.x = -Math.PI / 2;
 scene.add(field);
 
-// Target Ring on Ground
+// Target Ring
 const targetRing = new THREE.Mesh(
     new THREE.RingGeometry(0.8, 1.1, 32),
     new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
@@ -165,13 +166,23 @@ targetRing.rotation.x = -Math.PI / 2;
 targetRing.position.y = 0.05;
 scene.add(targetRing);
 
-// Bouncing Possession Indicator Marker Above Player
+// Possession Indicator Marker
 const possessionMarker = new THREE.Mesh(
     new THREE.ConeGeometry(0.4, 0.8, 16),
     new THREE.MeshBasicMaterial({ color: 0xfacc15 })
 );
-possessionMarker.rotation.x = Math.PI; // Points down
+possessionMarker.rotation.x = Math.PI;
 scene.add(possessionMarker);
+
+// Loose Ground Ball Indicator
+const groundBallRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.4, 0.7, 32),
+    new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide })
+);
+groundBallRing.rotation.x = -Math.PI / 2;
+groundBallRing.position.y = 0.06;
+groundBallRing.visible = false;
+scene.add(groundBallRing);
 
 // Goals Construction
 function buildGoal(zPos) {
@@ -192,7 +203,7 @@ const userGoal = buildGoal(HALF_L - 6);
 const aiGoal = buildGoal(-HALF_L + 6);
 scene.add(userGoal, aiGoal);
 
-// --- PLAYERS & GOALIE ---
+// --- PLAYERS & GOALIES ---
 function createPlayer(color) {
     const p = new THREE.Group();
     const mat = new THREE.MeshLambertMaterial({ color: color });
@@ -216,16 +227,19 @@ function createPlayer(color) {
 
 const userTeam = [createPlayer(0x2563eb), createPlayer(0x2563eb), createPlayer(0x2563eb)];
 const aiTeam = [createPlayer(0xd97706), createPlayer(0xd97706), createPlayer(0xd97706)];
-const aiGoalie = createPlayer(0xd97706);
+const userGoalie = createPlayer(0x2563eb); // User Team Goalie
+const aiGoalie = createPlayer(0xd97706);   // AI Team Goalie
 
 userTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, 15); scene.add(p); });
 aiTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, -15); scene.add(p); });
 
+userGoalie.position.set(0, 0, HALF_L - 6);
 aiGoalie.position.set(0, 0, -HALF_L + 6);
-scene.add(aiGoalie);
+scene.add(userGoalie, aiGoalie);
 
 let activeUserIdx = 0;
 let ballCarrier = userTeam[0];
+let isGroundBall = false;
 
 const ball = new THREE.Mesh(
     new THREE.SphereGeometry(0.25, 16, 16),
@@ -235,7 +249,7 @@ scene.add(ball);
 
 let ballVel = new THREE.Vector3(), ballInAir = false;
 
-// --- RAYCASTING & INPUTS ---
+// --- INPUTS & RAYCASTING ---
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
@@ -261,7 +275,6 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('keydown', (e) => {
     keyState[e.code] = true;
 
-    // Toggle Shot Mode when holding ball on enemy half
     if (e.code === 'KeyF' && ballCarrier === userTeam[activeUserIdx]) {
         if (userTeam[activeUserIdx].position.z < 0) {
             if (gameState === "OFFENSE") {
@@ -277,9 +290,8 @@ window.addEventListener('keydown', (e) => {
         meterPower = 0;
         document.getElementById('meter-container').style.display = 'block';
 
-        // Perform Check animation if on Defense
-        if (gameState === "DEFENSE") {
-            performCheckAttempt();
+        if (gameState === "DEFENSE" || (ballCarrier && aiTeam.includes(ballCarrier))) {
+            performUserCheck();
         }
     }
 });
@@ -288,7 +300,7 @@ window.addEventListener('keyup', (e) => {
     keyState[e.code] = false;
 
     if (e.code === 'Space' && meterCharging) {
-        if (gameState === "OFFENSE" || gameState === "SHOT_MODE") {
+        if ((gameState === "OFFENSE" || gameState === "SHOT_MODE") && ballCarrier === userTeam[activeUserIdx]) {
             executePassOrShot();
         }
         meterCharging = false;
@@ -315,33 +327,37 @@ function triggerVisualCheckEffect(text = "CHECKED!") {
     const el = document.getElementById('check-effect');
     el.innerText = text;
     el.classList.add('active');
-    setTimeout(() => el.classList.remove('active'), 500);
+    setTimeout(() => el.classList.remove('active'), 600);
 }
 
-function performCheckAttempt() {
+function dislodgeBallToGround(pos) {
+    ballCarrier = null;
+    ballInAir = false;
+    isGroundBall = true;
+    ballVel.set((Math.random() - 0.5) * 0.1, 0, (Math.random() - 0.5) * 0.1);
+    ball.position.set(pos.x + (Math.random() - 0.5), 0.25, pos.z + (Math.random() - 0.5));
+    document.getElementById('status-banner').innerText = "LOOSE BALL! Run over the ball on the field to scoop it up!";
+}
+
+function performUserCheck() {
     const userPlayer = userTeam[activeUserIdx];
-    // Swing stick animation
     if (userPlayer.stick) userPlayer.stick.rotation.y = Math.PI / 2;
     setTimeout(() => { if (userPlayer.stick) userPlayer.stick.rotation.y = 0; }, 250);
 
-    // Check distance to AI ball carrier
     if (ballCarrier && aiTeam.includes(ballCarrier)) {
         if (userPlayer.position.distanceTo(ballCarrier.position) < 2.0) {
-            triggerVisualCheckEffect("STICK CHECK!");
-            ballCarrier = userPlayer;
-            gameState = "OFFENSE";
-            document.getElementById('status-banner').innerText = "GREAT CHECK! You dislodged the ball!";
+            triggerVisualCheckEffect("GREAT CHECK!");
+            dislodgeBallToGround(ballCarrier.position);
         }
     }
 }
 
-// --- PASSING & SHOOTING MECHANICS ---
 function executePassOrShot() {
     ballInAir = true;
+    isGroundBall = false;
     const shooter = userTeam[activeUserIdx];
 
     if (gameState === "SHOT_MODE") {
-        // Aim shot at Goal Target
         const targetX = mousePos.x * 3.0;
         const targetY = Math.max(0.4, Math.min(3.0, (mousePos.y + 0.5) * 2.5));
         const shotTarget = new THREE.Vector3(targetX, targetY, -HALF_L + 6);
@@ -378,6 +394,7 @@ function resetRound(carrier) {
     exitShotMode();
     ballCarrier = carrier;
     ballInAir = false;
+    isGroundBall = false;
     ballVel.set(0, 0, 0);
     
     if (userTeam.includes(carrier)) {
@@ -388,19 +405,20 @@ function resetRound(carrier) {
     }
 
     userTeam[0].position.set(0, 0, 15);
-    userTeam[1].position.set(10, 0, 18);
-    userTeam[2].position.set(-10, 0, 18);
+    userTeam[1].position.set(12, 0, 20);
+    userTeam[2].position.set(-12, 0, 20);
 
     aiTeam[0].position.set(0, 0, -15);
-    aiTeam[1].position.set(10, 0, -18);
-    aiTeam[2].position.set(-10, 0, -18);
+    aiTeam[1].position.set(12, 0, -20);
+    aiTeam[2].position.set(-12, 0, -20);
 
+    userGoalie.position.set(0, 0, HALF_L - 6);
     aiGoalie.position.set(0, 0, -HALF_L + 6);
 }
 
-// --- COLLISION PREVENTION STEP ---
+// Collisions
 function enforcePlayerCollisions() {
-    const allPlayers = [...userTeam, ...aiTeam, aiGoalie];
+    const allPlayers = [...userTeam, ...aiTeam, userGoalie, aiGoalie];
     for (let i = 0; i < allPlayers.length; i++) {
         for (let j = i + 1; j < allPlayers.length; j++) {
             const p1 = allPlayers[i];
@@ -410,7 +428,7 @@ function enforcePlayerCollisions() {
             if (dist < MIN_PLAYER_DIST && dist > 0.001) {
                 const overlap = (MIN_PLAYER_DIST - dist) / 2;
                 const pushDir = new THREE.Vector3().subVectors(p1.position, p2.position).normalize();
-                pushDir.y = 0; // Keep on ground plane
+                pushDir.y = 0;
                 p1.position.addScaledVector(pushDir, overlap);
                 p2.position.subScaledVector(pushDir, -overlap);
             }
@@ -418,7 +436,7 @@ function enforcePlayerCollisions() {
     }
 }
 
-// --- AI LOGIC (OFFENSE, DEFENDERS & GOALIE) ---
+// AI Tactics
 function updateAI(timeScale) {
     const ballPos = ballCarrier ? ballCarrier.position : ball.position;
 
@@ -435,8 +453,8 @@ function updateAI(timeScale) {
         }
     });
 
-    // 2. AI Defensive Pursuer & Off-ball Defender marking
-    if (gameState === "OFFENSE" || (ballCarrier && userTeam.includes(ballCarrier))) {
+    // 2. AI Defenders Behavior (Strictly maintain defensive half unless on offense)
+    if (gameState === "OFFENSE" || (ballCarrier && userTeam.includes(ballCarrier)) || (isGroundBall && ball.position.z < 0)) {
         let closestDefenderIdx = 0;
         let minDist = 999;
         aiTeam.forEach((defender, idx) => {
@@ -446,39 +464,46 @@ function updateAI(timeScale) {
 
         aiTeam.forEach((defender, idx) => {
             if (idx === closestDefenderIdx) {
-                // Pursuing Ball Carrier - slightly slower than player (0.16 vs 0.22)
-                const dir = new THREE.Vector3().subVectors(ballPos, defender.position).normalize();
-                defender.position.add(dir.multiplyScalar(0.16 * timeScale));
+                // Primary Pursuer - Attacks ball carrier or ground ball
+                const targetPoint = isGroundBall ? ball.position : ballPos;
+                const dir = new THREE.Vector3().subVectors(targetPoint, defender.position).normalize();
+                
+                // Keep defender on defensive half (z < 5 max)
+                if (defender.position.z + dir.z * 0.16 <= 5) {
+                    defender.position.add(dir.multiplyScalar(0.16 * timeScale));
+                }
 
-                // AI Stick Check Attempt
-                if (defender.position.distanceTo(userTeam[activeUserIdx].position) < 1.5 && ballCarrier === userTeam[activeUserIdx]) {
+                // AI Check Attempt
+                if (!isGroundBall && defender.position.distanceTo(userTeam[activeUserIdx].position) < 1.5 && ballCarrier === userTeam[activeUserIdx]) {
                     if (Math.random() < 0.02) {
-                        triggerVisualCheckEffect("AI CHECKED YOU!");
-                        ballCarrier = defender;
-                        gameState = "DEFENSE";
-                        document.getElementById('status-banner').innerText = "DEFENSE MODE: Pursue the enemy ball carrier and press Space to check!";
+                        triggerVisualCheckEffect("BALL CHECKED!");
+                        dislodgeBallToGround(userTeam[activeUserIdx].position);
                     }
                 }
             } else {
-                // Mark teammates
-                const userTeammate = userTeam[(idx + activeUserIdx) % userTeam.length];
-                const dir = new THREE.Vector3().subVectors(userTeammate.position, defender.position).normalize();
+                // TACTICAL SHOT / PASS BLOCKING POSITIONING
+                const assignedTeammate = userTeam[(idx + activeUserIdx) % userTeam.length];
+                const blockPosition = new THREE.Vector3().addVectors(assignedTeammate.position, aiGoal.position).multiplyScalar(0.5);
+                blockPosition.z = Math.min(-2, blockPosition.z);
+
+                const dir = new THREE.Vector3().subVectors(blockPosition, defender.position).normalize();
                 defender.position.add(dir.multiplyScalar(0.13 * timeScale));
             }
         });
 
     } else if (gameState === "DEFENSE" && ballCarrier && aiTeam.includes(ballCarrier)) {
-        // 3. AI Attack with Ball when they have possession!
+        // 3. AI Offense Attack
         const aiCarrier = ballCarrier;
         const goalTarget = new THREE.Vector3(0, 0, HALF_L - 6);
         const dir = new THREE.Vector3().subVectors(goalTarget, aiCarrier.position).normalize();
         aiCarrier.position.add(dir.multiplyScalar(0.15 * timeScale));
 
-        // AI Shoots when in range
-        if (aiCarrier.position.z > 10 && Math.random() < 0.01) {
+        // AI Shoots on User Net
+        if (aiCarrier.position.z > 10 && Math.random() < 0.012) {
             triggerVisualCheckEffect("AI SHOT!");
             ballInAir = true;
             ballCarrier = null;
+            isGroundBall = false;
             const shotDir = new THREE.Vector3(
                 (Math.random() - 0.5) * 3,
                 1.5 + Math.random(),
@@ -488,18 +513,28 @@ function updateAI(timeScale) {
         }
     }
 
-    // 4. Reactive Goalie AI (Moves to intercept shot line)
+    // 4. AI Goalie (Defends AI Net)
     if (ballInAir && ballVel.z < 0) {
-        // Intercept incoming shot target
         const goalZ = -HALF_L + 6;
         const t = (goalZ - ball.position.z) / ballVel.z;
         const predictedX = ball.position.x + ballVel.x * t;
         const targetX = Math.max(-2.2, Math.min(2.2, predictedX));
         aiGoalie.position.x += (targetX - aiGoalie.position.x) * (0.25 * timeScale);
     } else {
-        // Follow ball side-to-side dynamically
         const idleX = Math.max(-1.8, Math.min(1.8, ballPos.x * 0.3));
         aiGoalie.position.x += (idleX - aiGoalie.position.x) * (0.08 * timeScale);
+    }
+
+    // 5. User Goalie (Defends User Net)
+    if (ballInAir && ballVel.z > 0) {
+        const goalZ = HALF_L - 6;
+        const t = (goalZ - ball.position.z) / ballVel.z;
+        const predictedX = ball.position.x + ballVel.x * t;
+        const targetX = Math.max(-2.2, Math.min(2.2, predictedX));
+        userGoalie.position.x += (targetX - userGoalie.position.x) * (0.25 * timeScale);
+    } else {
+        const idleX = Math.max(-1.8, Math.min(1.8, ballPos.x * 0.3));
+        userGoalie.position.x += (idleX - userGoalie.position.x) * (0.08 * timeScale);
     }
 }
 
@@ -511,7 +546,6 @@ function animate(time) {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
 
-    // Bullet-time scale: Extremely slow 0.05 speed in Shot Mode!
     const timeScale = gameState === "SHOT_MODE" ? 0.05 : 1.0;
 
     // Clock Engine
@@ -526,22 +560,19 @@ function animate(time) {
         resetRound(userTeam[0]);
     }
 
-    // Shot Clock Countdown (1.0 second limit in Shot Mode!)
+    // Shot Clock (1.0s limit in Shot Mode)
     if (gameState === "SHOT_MODE") {
         shotClockTimer -= delta;
         document.getElementById('shot-clock-ui').innerText = Math.max(0, shotClockTimer).toFixed(1) + 's';
 
         if (shotClockTimer <= 0) {
-            // Shot Clock Expired -> Auto Check!
             triggerVisualCheckEffect("AUTO-CHECKED!");
             exitShotMode();
-            ballCarrier = aiTeam[0];
-            gameState = "DEFENSE";
-            document.getElementById('status-banner').innerText = "SHOT CLOCK EXPIRED! Auto-checked by defender!";
+            dislodgeBallToGround(userTeam[activeUserIdx].position);
         }
     }
 
-    // User Movement (DISABLED in Shot Mode)
+    // User Movement (WASD)
     const player = userTeam[activeUserIdx];
     if (gameState !== "SHOT_MODE") {
         const moveSpeed = 0.22;
@@ -550,18 +581,45 @@ function animate(time) {
         if (keyState['KeyA']) player.position.x -= moveSpeed;
         if (keyState['KeyD']) player.position.x += moveSpeed;
 
-        // Stick Protection Tilt
         if (player.stick) {
             const sideTilt = (groundTarget.x - player.position.x) * 0.06;
             player.stick.rotation.z = Math.max(-0.9, Math.min(0.9, sideTilt));
         }
     }
 
-    // Run AI & Enforce Player Collisions
     updateAI(timeScale);
     enforcePlayerCollisions();
 
-    // Bouncing Possession Indicator
+    // Ground Ball Ring & Scooping Mechanic
+    if (isGroundBall) {
+        groundBallRing.visible = true;
+        groundBallRing.position.set(ball.position.x, 0.06, ball.position.z);
+
+        // User Scoop Check
+        userTeam.forEach((p, idx) => {
+            if (p.position.distanceTo(ball.position) < 1.8) {
+                ballCarrier = p;
+                activeUserIdx = idx;
+                isGroundBall = false;
+                gameState = "OFFENSE";
+                document.getElementById('status-banner').innerText = "BALL SCOOPED UP! You have possession!";
+            }
+        });
+
+        // AI Scoop Check
+        aiTeam.forEach((p) => {
+            if (p.position.distanceTo(ball.position) < 1.8) {
+                ballCarrier = p;
+                isGroundBall = false;
+                gameState = "DEFENSE";
+                document.getElementById('status-banner').innerText = "AI SCOOPED UP THE BALL!";
+            }
+        });
+    } else {
+        groundBallRing.visible = false;
+    }
+
+    // Bouncing Possession Marker
     if (ballCarrier) {
         possessionMarker.visible = true;
         possessionMarker.position.set(
@@ -578,32 +636,41 @@ function animate(time) {
         ball.position.copy(ballCarrier.position).add(new THREE.Vector3(0.3, 1.2, -0.3));
     } else if (ballInAir) {
         ball.position.add(ballVel.clone().multiplyScalar(timeScale));
-        ballVel.y -= 0.008 * timeScale; // Gravity
+        ballVel.y -= 0.008 * timeScale;
 
-        // Catch Transfer (Auto-switches user control upon catching!)
+        // User Catching Pass
         userTeam.forEach((p, idx) => {
             if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0.1) {
                 ballCarrier = p;
-                activeUserIdx = idx; // User takes control of player fielding the ball!
+                activeUserIdx = idx;
                 ballInAir = false;
+                isGroundBall = false;
                 gameState = "OFFENSE";
             }
         });
 
-        // AI Catching
+        // AI Catching Pass
         aiTeam.forEach((p) => {
             if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0.1) {
                 ballCarrier = p;
                 ballInAir = false;
+                isGroundBall = false;
                 gameState = "DEFENSE";
             }
         });
 
-        // Goalie Block Check
+        // AI Goalie Save Check
         if (ball.position.distanceTo(aiGoalie.position) < 1.5) {
             triggerVisualCheckEffect("GOALIE SAVE!");
             ballInAir = false;
-            ballCarrier = aiGoalie;
+            dislodgeBallToGround(aiGoalie.position);
+        }
+
+        // User Goalie Save Check
+        if (ball.position.distanceTo(userGoalie.position) < 1.5) {
+            triggerVisualCheckEffect("GOALIE SAVE!");
+            ballInAir = false;
+            dislodgeBallToGround(userGoalie.position);
         }
 
         // User Score Check (AI Goal)
@@ -630,7 +697,7 @@ function animate(time) {
         document.getElementById('meter-bar').style.width = meterPower + '%';
     }
 
-    // Dynamic Camera Modes
+    // Camera Modes
     if (gameState === "SHOT_MODE") {
         camera.position.copy(player.position).add(new THREE.Vector3(0, 1.7, 0));
         camera.lookAt(0, 1.6, -HALF_L + 6);
