@@ -24,9 +24,28 @@
         /* Banner & Status Overlay */
         #status-banner {
             position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-            background: rgba(15, 23, 42, 0.9); color: #e2e8f0; padding: 10px 22px;
-            border-radius: 10px; font-size: 0.9rem; text-align: center; z-index: 10;
+            background: rgba(15, 23, 42, 0.92); color: #e2e8f0; padding: 12px 24px;
+            border-radius: 10px; font-size: 0.95rem; text-align: center; z-index: 10;
             border: 1px solid #334155; pointer-events: none; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            font-weight: 600;
+        }
+
+        /* Shot Timer Overlay */
+        #shot-clock-ui {
+            position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
+            font-size: 2.2rem; font-weight: 900; color: #ef4444; text-shadow: 0 0 12px rgba(239,68,68,0.8);
+            display: none; z-index: 20; background: rgba(15, 23, 42, 0.85); padding: 4px 18px;
+            border-radius: 8px; border: 2px solid #ef4444;
+        }
+
+        /* Check Popup Effect */
+        #check-effect {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) scale(0.5);
+            font-size: 3rem; font-weight: 900; color: #facc15; text-shadow: 0 0 20px #eab308;
+            opacity: 0; pointer-events: none; z-index: 30; transition: transform 0.2s, opacity 0.2s;
+        }
+        #check-effect.active {
+            transform: translate(-50%, -50%) scale(1.2); opacity: 1;
         }
 
         /* Shot / Pass Meter UI */
@@ -45,16 +64,16 @@
         /* First Person Goal Crosshair */
         #crosshair {
             position: absolute; width: 32px; height: 32px;
-            border: 2px solid #ef4444; border-radius: 50%;
+            border: 3px solid #ef4444; border-radius: 50%;
             display: none; pointer-events: none; z-index: 25;
-            transform: translate(-50%, -50%); box-shadow: 0 0 10px #ef4444;
+            transform: translate(-50%, -50%); box-shadow: 0 0 12px #ef4444;
         }
         #crosshair::after {
             content: ''; position: absolute; top: 50%; left: 50%; width: 6px; height: 6px;
             background: #ef4444; border-radius: 50%; transform: translate(-50%, -50%);
         }
     </style>
-    <!-- Three.js 3D Engine -->
+    <!-- Three.js Engine CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
@@ -67,8 +86,11 @@
     </div>
 
     <div id="status-banner">
-        WASD: Move | Mouse: Target & Stick Protection | Space: Hold to Charge Pass/Shot | F: First Person Bullet-Time Shot
+        WASD: Move | Mouse: Aim Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot Mode
     </div>
+
+    <div id="shot-clock-ui">1.0s</div>
+    <div id="check-effect">CHECKED!</div>
 
     <div id="meter-container">
         <div id="meter-target"></div>
@@ -79,11 +101,13 @@
     <div id="canvas-container"></div>
 
 <script>
-// --- ENGINE & GAME STATE ---
+// --- ENGINE & GAME CONSTANTS ---
 const FIELD_W = 60, FIELD_L = 110, HALF_L = FIELD_L / 2;
+const MIN_PLAYER_DIST = 1.6; // Prevents clipping inside each other
 let period = 1, clockTime = 120, userScore = 0, aiScore = 0;
 let gameState = "OFFENSE"; // OFFENSE, SHOT_MODE, DEFENSE
 let meterPower = 0, meterCharging = false, meterDir = 1;
+let shotClockTimer = 1.0;
 let keyState = {}, mousePos = new THREE.Vector2(), groundTarget = new THREE.Vector3();
 let rawMousePixel = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
@@ -105,7 +129,7 @@ const dirLight = new THREE.DirectionalLight(0xffffff, 0.75);
 dirLight.position.set(40, 80, 30);
 scene.add(dirLight);
 
-// --- FIELD & MARKINGS ---
+// Field Texture
 function generateFieldTexture() {
     const canvas = document.createElement('canvas');
     canvas.width = 1024; canvas.height = 2048;
@@ -140,6 +164,14 @@ const targetRing = new THREE.Mesh(
 targetRing.rotation.x = -Math.PI / 2;
 targetRing.position.y = 0.05;
 scene.add(targetRing);
+
+// Bouncing Possession Indicator Marker Above Player
+const possessionMarker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.4, 0.8, 16),
+    new THREE.MeshBasicMaterial({ color: 0xfacc15 })
+);
+possessionMarker.rotation.x = Math.PI; // Points down
+scene.add(possessionMarker);
 
 // Goals Construction
 function buildGoal(zPos) {
@@ -184,7 +216,7 @@ function createPlayer(color) {
 
 const userTeam = [createPlayer(0x2563eb), createPlayer(0x2563eb), createPlayer(0x2563eb)];
 const aiTeam = [createPlayer(0xd97706), createPlayer(0xd97706), createPlayer(0xd97706)];
-const aiGoalie = createPlayer(0xd97706); // 3D AI Goalie
+const aiGoalie = createPlayer(0xd97706);
 
 userTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, 15); scene.add(p); });
 aiTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, -15); scene.add(p); });
@@ -229,17 +261,13 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('keydown', (e) => {
     keyState[e.code] = true;
 
-    // Toggle Bullet-Time First Person Shot Mode
+    // Toggle Shot Mode when holding ball on enemy half
     if (e.code === 'KeyF' && ballCarrier === userTeam[activeUserIdx]) {
         if (userTeam[activeUserIdx].position.z < 0) {
             if (gameState === "OFFENSE") {
-                gameState = "SHOT_MODE";
-                document.getElementById('crosshair').style.display = 'block';
-                document.getElementById('status-banner').innerText = "BULLET TIME SHOT: Aim with Mouse | Hold Space to Charge Shot | F to Exit";
+                enterShotMode();
             } else if (gameState === "SHOT_MODE") {
-                gameState = "OFFENSE";
-                document.getElementById('crosshair').style.display = 'none';
-                document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot";
+                exitShotMode();
             }
         }
     }
@@ -248,6 +276,11 @@ window.addEventListener('keydown', (e) => {
         meterCharging = true;
         meterPower = 0;
         document.getElementById('meter-container').style.display = 'block';
+
+        // Perform Check animation if on Defense
+        if (gameState === "DEFENSE") {
+            performCheckAttempt();
+        }
     }
 });
 
@@ -255,11 +288,52 @@ window.addEventListener('keyup', (e) => {
     keyState[e.code] = false;
 
     if (e.code === 'Space' && meterCharging) {
-        executePassOrShot();
+        if (gameState === "OFFENSE" || gameState === "SHOT_MODE") {
+            executePassOrShot();
+        }
         meterCharging = false;
         document.getElementById('meter-container').style.display = 'none';
     }
 });
+
+function enterShotMode() {
+    gameState = "SHOT_MODE";
+    shotClockTimer = 1.0;
+    document.getElementById('crosshair').style.display = 'block';
+    document.getElementById('shot-clock-ui').style.display = 'block';
+    document.getElementById('status-banner').innerText = "BULLET TIME: Aim with Mouse | Hold Space to Shoot (1s Timer!)";
+}
+
+function exitShotMode() {
+    gameState = "OFFENSE";
+    document.getElementById('crosshair').style.display = 'none';
+    document.getElementById('shot-clock-ui').style.display = 'none';
+    document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Aim Target & Stick | Space: Charge Pass/Shot | F: Shot Mode";
+}
+
+function triggerVisualCheckEffect(text = "CHECKED!") {
+    const el = document.getElementById('check-effect');
+    el.innerText = text;
+    el.classList.add('active');
+    setTimeout(() => el.classList.remove('active'), 500);
+}
+
+function performCheckAttempt() {
+    const userPlayer = userTeam[activeUserIdx];
+    // Swing stick animation
+    if (userPlayer.stick) userPlayer.stick.rotation.y = Math.PI / 2;
+    setTimeout(() => { if (userPlayer.stick) userPlayer.stick.rotation.y = 0; }, 250);
+
+    // Check distance to AI ball carrier
+    if (ballCarrier && aiTeam.includes(ballCarrier)) {
+        if (userPlayer.position.distanceTo(ballCarrier.position) < 2.0) {
+            triggerVisualCheckEffect("STICK CHECK!");
+            ballCarrier = userPlayer;
+            gameState = "OFFENSE";
+            document.getElementById('status-banner').innerText = "GREAT CHECK! You dislodged the ball!";
+        }
+    }
+}
 
 // --- PASSING & SHOOTING MECHANICS ---
 function executePassOrShot() {
@@ -267,23 +341,20 @@ function executePassOrShot() {
     const shooter = userTeam[activeUserIdx];
 
     if (gameState === "SHOT_MODE") {
-        // Shoot at Mouse Target on Goal
-        const targetX = mousePos.x * 3.2;
+        // Aim shot at Goal Target
+        const targetX = mousePos.x * 3.0;
         const targetY = Math.max(0.4, Math.min(3.0, (mousePos.y + 0.5) * 2.5));
         const shotTarget = new THREE.Vector3(targetX, targetY, -HALF_L + 6);
 
         const dir = new THREE.Vector3().subVectors(shotTarget, shooter.position).normalize();
-        const speed = 0.8 + (meterPower / 100) * 0.9;
+        const speed = 0.9 + (meterPower / 100) * 1.0;
         ballVel.copy(dir.multiplyScalar(speed));
 
-        gameState = "OFFENSE";
-        document.getElementById('crosshair').style.display = 'none';
-        document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot";
+        exitShotMode();
 
     } else if (gameState === "OFFENSE") {
-        // Pass to Teammate / Ground Target
         let nearestTeammate = null;
-        let minDist = 12.0;
+        let minDist = 14.0;
 
         userTeam.forEach((p, idx) => {
             if (idx !== activeUserIdx) {
@@ -297,76 +368,139 @@ function executePassOrShot() {
 
         const speed = 0.45 + (meterPower / 100) * 0.5;
         ballVel.copy(dir.multiplyScalar(speed));
-        ballVel.y = meterPower < 20 ? 0.16 : 0.08; // Arc on light pass
+        ballVel.y = meterPower < 20 ? 0.16 : 0.08;
 
-        if (nearestTeammate !== null) {
-            activeUserIdx = nearestTeammate;
-        }
+        ballCarrier = null;
     }
 }
 
 function resetRound(carrier) {
-    gameState = "OFFENSE";
+    exitShotMode();
     ballCarrier = carrier;
     ballInAir = false;
     ballVel.set(0, 0, 0);
-    document.getElementById('crosshair').style.display = 'none';
+    
+    if (userTeam.includes(carrier)) {
+        gameState = "OFFENSE";
+        activeUserIdx = userTeam.indexOf(carrier);
+    } else {
+        gameState = "DEFENSE";
+    }
+
     userTeam[0].position.set(0, 0, 15);
+    userTeam[1].position.set(10, 0, 18);
+    userTeam[2].position.set(-10, 0, 18);
+
     aiTeam[0].position.set(0, 0, -15);
+    aiTeam[1].position.set(10, 0, -18);
+    aiTeam[2].position.set(-10, 0, -18);
+
     aiGoalie.position.set(0, 0, -HALF_L + 6);
 }
 
-// --- AI LOGIC (DEFENDERS & TEAMMATES) ---
+// --- COLLISION PREVENTION STEP ---
+function enforcePlayerCollisions() {
+    const allPlayers = [...userTeam, ...aiTeam, aiGoalie];
+    for (let i = 0; i < allPlayers.length; i++) {
+        for (let j = i + 1; j < allPlayers.length; j++) {
+            const p1 = allPlayers[i];
+            const p2 = allPlayers[j];
+            const dist = p1.position.distanceTo(p2.position);
+
+            if (dist < MIN_PLAYER_DIST && dist > 0.001) {
+                const overlap = (MIN_PLAYER_DIST - dist) / 2;
+                const pushDir = new THREE.Vector3().subVectors(p1.position, p2.position).normalize();
+                pushDir.y = 0; // Keep on ground plane
+                p1.position.addScaledVector(pushDir, overlap);
+                p2.position.subScaledVector(pushDir, -overlap);
+            }
+        }
+    }
+}
+
+// --- AI LOGIC (OFFENSE, DEFENDERS & GOALIE) ---
 function updateAI(timeScale) {
     const ballPos = ballCarrier ? ballCarrier.position : ball.position;
 
-    // 1. Teammates move to get open
+    // 1. Off-ball User Teammates cutting to get open
     userTeam.forEach((p, idx) => {
         if (idx !== activeUserIdx) {
             const openTarget = new THREE.Vector3(
-                (idx === 1 ? 12 : -12) + Math.sin(Date.now() * 0.002 + idx) * 5,
+                (idx === 1 ? 14 : -14) + Math.sin(Date.now() * 0.0015 + idx) * 6,
                 0,
-                -10 + Math.cos(Date.now() * 0.002) * 8
+                -12 + Math.cos(Date.now() * 0.0015) * 8
             );
             const dir = new THREE.Vector3().subVectors(openTarget, p.position).normalize();
             p.position.add(dir.multiplyScalar(0.12 * timeScale));
         }
     });
 
-    // 2. Identify Closest AI Defender to Ball Carrier
-    let closestDefenderIdx = 0;
-    let minDist = 999;
-    aiTeam.forEach((defender, idx) => {
-        const d = defender.position.distanceTo(ballPos);
-        if (d < minDist) { minDist = d; closestDefenderIdx = idx; }
-    });
+    // 2. AI Defensive Pursuer & Off-ball Defender marking
+    if (gameState === "OFFENSE" || (ballCarrier && userTeam.includes(ballCarrier))) {
+        let closestDefenderIdx = 0;
+        let minDist = 999;
+        aiTeam.forEach((defender, idx) => {
+            const d = defender.position.distanceTo(ballPos);
+            if (d < minDist) { minDist = d; closestDefenderIdx = idx; }
+        });
 
-    // 3. Pursuing Defender (Slightly slower than player)
-    aiTeam.forEach((defender, idx) => {
-        if (idx === closestDefenderIdx) {
-            // Primary Pursuer - Slightly slower than user (0.17 vs 0.22)
-            const dir = new THREE.Vector3().subVectors(ballPos, defender.position).normalize();
-            defender.position.add(dir.multiplyScalar(0.17 * timeScale));
+        aiTeam.forEach((defender, idx) => {
+            if (idx === closestDefenderIdx) {
+                // Pursuing Ball Carrier - slightly slower than player (0.16 vs 0.22)
+                const dir = new THREE.Vector3().subVectors(ballPos, defender.position).normalize();
+                defender.position.add(dir.multiplyScalar(0.16 * timeScale));
 
-            // Check Stick Logic
-            if (defender.position.distanceTo(userTeam[activeUserIdx].position) < 1.6 && ballCarrier === userTeam[activeUserIdx]) {
-                if (Math.random() < 0.02) { // Dislodge ball
-                    ballCarrier = defender;
-                    gameState = "DEFENSE";
-                    document.getElementById('status-banner').innerText = "BALL CHECKED! AI took possession!";
+                // AI Stick Check Attempt
+                if (defender.position.distanceTo(userTeam[activeUserIdx].position) < 1.5 && ballCarrier === userTeam[activeUserIdx]) {
+                    if (Math.random() < 0.02) {
+                        triggerVisualCheckEffect("AI CHECKED YOU!");
+                        ballCarrier = defender;
+                        gameState = "DEFENSE";
+                        document.getElementById('status-banner').innerText = "DEFENSE MODE: Pursue the enemy ball carrier and press Space to check!";
+                    }
                 }
+            } else {
+                // Mark teammates
+                const userTeammate = userTeam[(idx + activeUserIdx) % userTeam.length];
+                const dir = new THREE.Vector3().subVectors(userTeammate.position, defender.position).normalize();
+                defender.position.add(dir.multiplyScalar(0.13 * timeScale));
             }
-        } else {
-            // Mark assigned teammates
-            const userTeammate = userTeam[(idx + activeUserIdx) % userTeam.length];
-            const dir = new THREE.Vector3().subVectors(userTeammate.position, defender.position).normalize();
-            defender.position.add(dir.multiplyScalar(0.14 * timeScale));
-        }
-    });
+        });
 
-    // 4. Goalie Side-to-Side Block Movement
-    const goalieTargetX = Math.sin(Date.now() * 0.003) * 1.8;
-    aiGoalie.position.x += (goalieTargetX - aiGoalie.position.x) * (0.05 * timeScale);
+    } else if (gameState === "DEFENSE" && ballCarrier && aiTeam.includes(ballCarrier)) {
+        // 3. AI Attack with Ball when they have possession!
+        const aiCarrier = ballCarrier;
+        const goalTarget = new THREE.Vector3(0, 0, HALF_L - 6);
+        const dir = new THREE.Vector3().subVectors(goalTarget, aiCarrier.position).normalize();
+        aiCarrier.position.add(dir.multiplyScalar(0.15 * timeScale));
+
+        // AI Shoots when in range
+        if (aiCarrier.position.z > 10 && Math.random() < 0.01) {
+            triggerVisualCheckEffect("AI SHOT!");
+            ballInAir = true;
+            ballCarrier = null;
+            const shotDir = new THREE.Vector3(
+                (Math.random() - 0.5) * 3,
+                1.5 + Math.random(),
+                HALF_L - 6
+            ).sub(aiCarrier.position).normalize();
+            ballVel.copy(shotDir.multiplyScalar(0.85));
+        }
+    }
+
+    // 4. Reactive Goalie AI (Moves to intercept shot line)
+    if (ballInAir && ballVel.z < 0) {
+        // Intercept incoming shot target
+        const goalZ = -HALF_L + 6;
+        const t = (goalZ - ball.position.z) / ballVel.z;
+        const predictedX = ball.position.x + ballVel.x * t;
+        const targetX = Math.max(-2.2, Math.min(2.2, predictedX));
+        aiGoalie.position.x += (targetX - aiGoalie.position.x) * (0.25 * timeScale);
+    } else {
+        // Follow ball side-to-side dynamically
+        const idleX = Math.max(-1.8, Math.min(1.8, ballPos.x * 0.3));
+        aiGoalie.position.x += (idleX - aiGoalie.position.x) * (0.08 * timeScale);
+    }
 }
 
 // --- MAIN GAME LOOP ---
@@ -377,8 +511,8 @@ function animate(time) {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
 
-    // Time Scale for Bullet-Time Shot Mode
-    const timeScale = gameState === "SHOT_MODE" ? 0.2 : 1.0;
+    // Bullet-time scale: Extremely slow 0.05 speed in Shot Mode!
+    const timeScale = gameState === "SHOT_MODE" ? 0.05 : 1.0;
 
     // Clock Engine
     if (clockTime > 0) {
@@ -392,53 +526,104 @@ function animate(time) {
         resetRound(userTeam[0]);
     }
 
-    // WASD Movement
-    const player = userTeam[activeUserIdx];
-    const moveSpeed = 0.22;
-    if (keyState['KeyW']) player.position.z -= moveSpeed;
-    if (keyState['KeyS']) player.position.z += moveSpeed;
-    if (keyState['KeyA']) player.position.x -= moveSpeed;
-    if (keyState['KeyD']) player.position.x += moveSpeed;
+    // Shot Clock Countdown (1.0 second limit in Shot Mode!)
+    if (gameState === "SHOT_MODE") {
+        shotClockTimer -= delta;
+        document.getElementById('shot-clock-ui').innerText = Math.max(0, shotClockTimer).toFixed(1) + 's';
 
-    // Stick Protection Tilt by Mouse Position
-    if (player.stick) {
-        const sideTilt = (groundTarget.x - player.position.x) * 0.06;
-        player.stick.rotation.z = Math.max(-0.9, Math.min(0.9, sideTilt));
+        if (shotClockTimer <= 0) {
+            // Shot Clock Expired -> Auto Check!
+            triggerVisualCheckEffect("AUTO-CHECKED!");
+            exitShotMode();
+            ballCarrier = aiTeam[0];
+            gameState = "DEFENSE";
+            document.getElementById('status-banner').innerText = "SHOT CLOCK EXPIRED! Auto-checked by defender!";
+        }
     }
 
-    // Update AI
-    updateAI(timeScale);
+    // User Movement (DISABLED in Shot Mode)
+    const player = userTeam[activeUserIdx];
+    if (gameState !== "SHOT_MODE") {
+        const moveSpeed = 0.22;
+        if (keyState['KeyW']) player.position.z -= moveSpeed;
+        if (keyState['KeyS']) player.position.z += moveSpeed;
+        if (keyState['KeyA']) player.position.x -= moveSpeed;
+        if (keyState['KeyD']) player.position.x += moveSpeed;
 
-    // Ball Dynamics
+        // Stick Protection Tilt
+        if (player.stick) {
+            const sideTilt = (groundTarget.x - player.position.x) * 0.06;
+            player.stick.rotation.z = Math.max(-0.9, Math.min(0.9, sideTilt));
+        }
+    }
+
+    // Run AI & Enforce Player Collisions
+    updateAI(timeScale);
+    enforcePlayerCollisions();
+
+    // Bouncing Possession Indicator
+    if (ballCarrier) {
+        possessionMarker.visible = true;
+        possessionMarker.position.set(
+            ballCarrier.position.x,
+            3.2 + Math.sin(Date.now() * 0.008) * 0.25,
+            ballCarrier.position.z
+        );
+    } else {
+        possessionMarker.visible = false;
+    }
+
+    // Ball Mechanics & Catching
     if (!ballInAir && ballCarrier) {
         ball.position.copy(ballCarrier.position).add(new THREE.Vector3(0.3, 1.2, -0.3));
     } else if (ballInAir) {
         ball.position.add(ballVel.clone().multiplyScalar(timeScale));
-        ballVel.y -= 0.008 * timeScale;
+        ballVel.y -= 0.008 * timeScale; // Gravity
 
-        // Catching Ball
+        // Catch Transfer (Auto-switches user control upon catching!)
         userTeam.forEach((p, idx) => {
-            if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0) {
-                ballCarrier = p; activeUserIdx = idx; ballInAir = false; gameState = "OFFENSE";
+            if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0.1) {
+                ballCarrier = p;
+                activeUserIdx = idx; // User takes control of player fielding the ball!
+                ballInAir = false;
+                gameState = "OFFENSE";
             }
         });
 
-        // Goalie Save Check
+        // AI Catching
+        aiTeam.forEach((p) => {
+            if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0.1) {
+                ballCarrier = p;
+                ballInAir = false;
+                gameState = "DEFENSE";
+            }
+        });
+
+        // Goalie Block Check
         if (ball.position.distanceTo(aiGoalie.position) < 1.5) {
+            triggerVisualCheckEffect("GOALIE SAVE!");
             ballInAir = false;
             ballCarrier = aiGoalie;
-            document.getElementById('status-banner').innerText = "SHOT BLOCKED BY GOALIE!";
         }
 
-        // User Scoring Check
-        if (ball.position.z <= aiGoal.position.z + 0.8 && Math.abs(ball.position.x) < 2.2 && ball.position.y < 3.2) {
+        // User Score Check (AI Goal)
+        if (ball.position.z <= aiGoal.position.z + 0.8 && Math.abs(ball.position.x) < 2.2 && ball.position.y < 3.2 && ball.position.y > 0) {
             userScore++;
             document.getElementById('score-user').innerText = userScore;
+            triggerVisualCheckEffect("GOAL!!!");
+            resetRound(userTeam[0]);
+        }
+
+        // AI Score Check (User Goal)
+        if (ball.position.z >= userGoal.position.z - 0.8 && Math.abs(ball.position.x) < 2.2 && ball.position.y < 3.2 && ball.position.y > 0) {
+            aiScore++;
+            document.getElementById('score-ai').innerText = aiScore;
+            triggerVisualCheckEffect("AI SCORED!");
             resetRound(userTeam[0]);
         }
     }
 
-    // Pass / Shot Meter Charging
+    // Shot / Pass Meter Cycle
     if (meterCharging) {
         meterPower += meterDir * 2.8;
         if (meterPower >= 100 || meterPower <= 0) meterDir *= -1;
