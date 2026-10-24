@@ -6,7 +6,7 @@
     <title>3D Lacrosse Showdown</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-        body { background: #0f172a; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #0f172a; overflow: hidden; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
         #canvas-container { width: 100vw; height: 100vh; display: block; position: absolute; top: 0; left: 0; }
         
         /* HUD UI Header */
@@ -32,27 +32,29 @@
         /* Shot / Pass Meter UI */
         #meter-container {
             position: absolute; bottom: 75px; left: 50%; transform: translateX(-50%);
-            width: 260px; height: 22px; background: #1e293b; border: 2px solid #ffffff;
-            border-radius: 11px; overflow: hidden; display: none; z-index: 20;
+            width: 280px; height: 24px; background: #0f172a; border: 2px solid #38bdf8;
+            border-radius: 12px; overflow: hidden; display: none; z-index: 20;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
         }
-        #meter-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6 0%, #22c55e 65%, #ef4444 100%); }
+        #meter-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6 0%, #22c55e 70%, #ef4444 100%); }
         #meter-target {
-            position: absolute; left: 60%; width: 20%; height: 100%;
-            background: rgba(34, 197, 94, 0.45); border-left: 2px solid #22c55e; border-right: 2px solid #22c55e;
+            position: absolute; left: 65%; width: 20%; height: 100%;
+            background: rgba(34, 197, 94, 0.4); border-left: 2px solid #22c55e; border-right: 2px solid #22c55e;
         }
 
-        /* Goalie / Shot Reticle */
-        #reticle {
-            position: absolute; top: 50%; left: 50%; width: 32px; height: 32px;
-            transform: translate(-50%, -50%); border: 3px solid #38bdf8; border-radius: 50%;
-            display: none; pointer-events: none; z-index: 25; box-shadow: 0 0 12px #38bdf8;
+        /* First Person Goal Crosshair */
+        #crosshair {
+            position: absolute; width: 32px; height: 32px;
+            border: 2px solid #ef4444; border-radius: 50%;
+            display: none; pointer-events: none; z-index: 25;
+            transform: translate(-50%, -50%); box-shadow: 0 0 10px #ef4444;
         }
-        #reticle::after {
+        #crosshair::after {
             content: ''; position: absolute; top: 50%; left: 50%; width: 6px; height: 6px;
-            background: #22c55e; border-radius: 50%; transform: translate(-50%, -50%);
+            background: #ef4444; border-radius: 50%; transform: translate(-50%, -50%);
         }
     </style>
-    <!-- Three.js 3D Library -->
+    <!-- Three.js 3D Engine -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
@@ -65,7 +67,7 @@
     </div>
 
     <div id="status-banner">
-        WASD: Move | Mouse: Target Ring & Stick Protection | Space: Pass/Check | F: 1st Person Shot (Enemy Half)
+        WASD: Move | Mouse: Target & Stick Protection | Space: Hold to Charge Pass/Shot | F: First Person Bullet-Time Shot
     </div>
 
     <div id="meter-container">
@@ -73,18 +75,19 @@
         <div id="meter-bar"></div>
     </div>
 
-    <div id="reticle"></div>
+    <div id="crosshair"></div>
     <div id="canvas-container"></div>
 
 <script>
-// --- ENGINE & GAME CONSTANTS ---
+// --- ENGINE & GAME STATE ---
 const FIELD_W = 60, FIELD_L = 110, HALF_L = FIELD_L / 2;
 let period = 1, clockTime = 120, userScore = 0, aiScore = 0;
-let gameState = "OFFENSE"; // OFFENSE, SHOT_MODE, DEFENSE, GOALIE_SAVE
-let meterPower = 0, meterCharging = false, meterDir = 1, spacePressTime = 0;
+let gameState = "OFFENSE"; // OFFENSE, SHOT_MODE, DEFENSE
+let meterPower = 0, meterCharging = false, meterDir = 1;
 let keyState = {}, mousePos = new THREE.Vector2(), groundTarget = new THREE.Vector3();
+let rawMousePixel = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
-// Scene Setup
+// Three.js Core
 const container = document.getElementById('canvas-container');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0f172a);
@@ -102,45 +105,34 @@ const dirLight = new THREE.DirectionalLight(0xffffff, 0.75);
 dirLight.position.set(40, 80, 30);
 scene.add(dirLight);
 
-// --- FIELD & GRAPHICS ---
+// --- FIELD & MARKINGS ---
 function generateFieldTexture() {
     const canvas = document.createElement('canvas');
     canvas.width = 1024; canvas.height = 2048;
     const ctx = canvas.getContext('2d');
 
-    // Turf Base
-    ctx.fillStyle = "#15803d";
-    ctx.fillRect(0, 0, 1024, 2048);
-
-    // Mow Stripes
+    ctx.fillStyle = "#15803d"; ctx.fillRect(0, 0, 1024, 2048);
     ctx.fillStyle = "#166534";
-    for (let y = 0; y < 2048; y += 128) {
-        ctx.fillRect(0, y, 1024, 64);
-    }
+    for (let y = 0; y < 2048; y += 128) ctx.fillRect(0, y, 1024, 64);
 
-    // Boundary & Lines
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 14;
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 14;
     ctx.strokeRect(30, 30, 964, 1988);
-
-    // Midfield & Center Circle
     ctx.beginPath(); ctx.moveTo(30, 1024); ctx.lineTo(994, 1024); ctx.stroke();
     ctx.beginPath(); ctx.arc(512, 1024, 110, 0, Math.PI * 2); ctx.stroke();
-
-    // Goal Creases
     ctx.beginPath(); ctx.arc(512, 220, 140, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.arc(512, 1828, 140, 0, Math.PI * 2); ctx.stroke();
 
     return new THREE.CanvasTexture(canvas);
 }
 
-const fieldGeo = new THREE.PlaneGeometry(FIELD_W, FIELD_L);
-const fieldMat = new THREE.MeshLambertMaterial({ map: generateFieldTexture() });
-const field = new THREE.Mesh(fieldGeo, fieldMat);
+const field = new THREE.Mesh(
+    new THREE.PlaneGeometry(FIELD_W, FIELD_L),
+    new THREE.MeshLambertMaterial({ map: generateFieldTexture() })
+);
 field.rotation.x = -Math.PI / 2;
 scene.add(field);
 
-// Target Circle on Ground
+// Target Ring on Ground
 const targetRing = new THREE.Mesh(
     new THREE.RingGeometry(0.8, 1.1, 32),
     new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
@@ -168,7 +160,7 @@ const userGoal = buildGoal(HALF_L - 6);
 const aiGoal = buildGoal(-HALF_L + 6);
 scene.add(userGoal, aiGoal);
 
-// --- PLAYERS & BALL ---
+// --- PLAYERS & GOALIE ---
 function createPlayer(color) {
     const p = new THREE.Group();
     const mat = new THREE.MeshLambertMaterial({ color: color });
@@ -192,9 +184,13 @@ function createPlayer(color) {
 
 const userTeam = [createPlayer(0x2563eb), createPlayer(0x2563eb), createPlayer(0x2563eb)];
 const aiTeam = [createPlayer(0xd97706), createPlayer(0xd97706), createPlayer(0xd97706)];
+const aiGoalie = createPlayer(0xd97706); // 3D AI Goalie
 
-userTeam.forEach((p, i) => { p.position.set((i - 1) * 12, 0, 15); scene.add(p); });
-aiTeam.forEach((p, i) => { p.position.set((i - 1) * 12, 0, -15); scene.add(p); });
+userTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, 15); scene.add(p); });
+aiTeam.forEach((p, i) => { p.position.set((i - 1) * 10, 0, -15); scene.add(p); });
+
+aiGoalie.position.set(0, 0, -HALF_L + 6);
+scene.add(aiGoalie);
 
 let activeUserIdx = 0;
 let ballCarrier = userTeam[0];
@@ -205,13 +201,16 @@ const ball = new THREE.Mesh(
 );
 scene.add(ball);
 
-let ballVel = new THREE.Vector3(), ballInAir = false, shotModeTarget = new THREE.Vector3();
+let ballVel = new THREE.Vector3(), ballInAir = false;
 
-// --- CONTROLS & RAYCASTING ---
+// --- RAYCASTING & INPUTS ---
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 window.addEventListener('mousemove', (e) => {
+    rawMousePixel.x = e.clientX;
+    rawMousePixel.y = e.clientY;
+
     mousePos.x = (e.clientX / window.innerWidth) * 2 - 1;
     mousePos.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
@@ -219,29 +218,34 @@ window.addEventListener('mousemove', (e) => {
     raycaster.ray.intersectPlane(groundPlane, groundTarget);
     targetRing.position.x = groundTarget.x;
     targetRing.position.z = groundTarget.z;
+
+    if (gameState === "SHOT_MODE") {
+        const crosshair = document.getElementById('crosshair');
+        crosshair.style.left = rawMousePixel.x + 'px';
+        crosshair.style.top = rawMousePixel.y + 'px';
+    }
 });
 
 window.addEventListener('keydown', (e) => {
     keyState[e.code] = true;
 
-    // Toggle Shot Mode on Enemy Half
+    // Toggle Bullet-Time First Person Shot Mode
     if (e.code === 'KeyF' && ballCarrier === userTeam[activeUserIdx]) {
         if (userTeam[activeUserIdx].position.z < 0) {
             if (gameState === "OFFENSE") {
                 gameState = "SHOT_MODE";
-                document.getElementById('reticle').style.display = 'block';
-                document.getElementById('status-banner').innerText = "1ST PERSON SHOT MODE: Aim with Mouse | Hold Space to Shoot | F to Cancel";
+                document.getElementById('crosshair').style.display = 'block';
+                document.getElementById('status-banner').innerText = "BULLET TIME SHOT: Aim with Mouse | Hold Space to Charge Shot | F to Exit";
             } else if (gameState === "SHOT_MODE") {
                 gameState = "OFFENSE";
-                document.getElementById('reticle').style.display = 'none';
-                document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Aim/Stick | Space: Pass/Check | F: Shot Mode";
+                document.getElementById('crosshair').style.display = 'none';
+                document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot";
             }
         }
     }
 
     if (e.code === 'Space' && !meterCharging && !ballInAir) {
         meterCharging = true;
-        spacePressTime = performance.now();
         meterPower = 0;
         document.getElementById('meter-container').style.display = 'block';
     }
@@ -251,44 +255,33 @@ window.addEventListener('keyup', (e) => {
     keyState[e.code] = false;
 
     if (e.code === 'Space' && meterCharging) {
-        const pressDuration = performance.now() - spacePressTime;
-        executePassOrShot(pressDuration < 200); // Short tap check
+        executePassOrShot();
         meterCharging = false;
         document.getElementById('meter-container').style.display = 'none';
     }
 });
 
-// --- PASSING & SHOOTING LOGIC ---
-function executePassOrShot(isTap) {
+// --- PASSING & SHOOTING MECHANICS ---
+function executePassOrShot() {
     ballInAir = true;
     const shooter = userTeam[activeUserIdx];
-    
+
     if (gameState === "SHOT_MODE") {
-        // First-Person Shot on AI Goal
-        const targetPoint = new THREE.Vector3(groundTarget.x, 1.5, aiGoal.position.z);
-        const dir = new THREE.Vector3().subVectors(targetPoint, shooter.position).normalize();
-        const speed = 0.7 + (meterPower / 100) * 0.8;
+        // Shoot at Mouse Target on Goal
+        const targetX = mousePos.x * 3.2;
+        const targetY = Math.max(0.4, Math.min(3.0, (mousePos.y + 0.5) * 2.5));
+        const shotTarget = new THREE.Vector3(targetX, targetY, -HALF_L + 6);
+
+        const dir = new THREE.Vector3().subVectors(shotTarget, shooter.position).normalize();
+        const speed = 0.8 + (meterPower / 100) * 0.9;
         ballVel.copy(dir.multiplyScalar(speed));
 
         gameState = "OFFENSE";
-        document.getElementById('reticle').style.display = 'none';
-
-        // Goalie Save Chance calculated by power & distance
-        const dist = shooter.position.distanceTo(aiGoal.position);
-        const saveProbability = Math.max(0.15, 0.85 - (meterPower / 120) + (dist / 120));
-        
-        setTimeout(() => {
-            if (ballInAir && Math.random() < saveProbability) {
-                // Goalie Saves
-                ballInAir = false;
-                ballCarrier = aiTeam[0];
-                gameState = "DEFENSE";
-                document.getElementById('status-banner').innerText = "SAVED BY GOALIE! Switch to Defense!";
-            }
-        }, 650);
+        document.getElementById('crosshair').style.display = 'none';
+        document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Target & Stick | Space: Charge Pass/Shot | F: Bullet-Time Shot";
 
     } else if (gameState === "OFFENSE") {
-        // Pass Logic
+        // Pass to Teammate / Ground Target
         let nearestTeammate = null;
         let minDist = 12.0;
 
@@ -302,16 +295,9 @@ function executePassOrShot(isTap) {
         const passTarget = nearestTeammate !== null ? userTeam[nearestTeammate].position : groundTarget;
         const dir = new THREE.Vector3().subVectors(passTarget, shooter.position).normalize();
 
-        if (isTap) {
-            // Light, slow, arced lob pass
-            ballVel.copy(dir.multiplyScalar(0.38));
-            ballVel.y = 0.18;
-        } else {
-            // Power Pass
-            const speed = 0.45 + (meterPower / 100) * 0.45;
-            ballVel.copy(dir.multiplyScalar(speed));
-            ballVel.y = 0.06;
-        }
+        const speed = 0.45 + (meterPower / 100) * 0.5;
+        ballVel.copy(dir.multiplyScalar(speed));
+        ballVel.y = meterPower < 20 ? 0.16 : 0.08; // Arc on light pass
 
         if (nearestTeammate !== null) {
             activeUserIdx = nearestTeammate;
@@ -319,38 +305,71 @@ function executePassOrShot(isTap) {
     }
 }
 
-function triggerEnemyShot() {
-    gameState = "GOALIE_SAVE";
-    document.getElementById('reticle').style.display = 'block';
-    document.getElementById('status-banner').innerText = "ENEMY SHOT! Move mouse reticle over the incoming ball to SAVE!";
-    
-    ballCarrier = null;
-    ballInAir = true;
-    ball.position.set(0, 1.5, -15);
-    ballVel.set((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.2, 0.7);
-
-    setTimeout(() => {
-        if (gameState === "GOALIE_SAVE") {
-            // Enemy Scored
-            aiScore++;
-            document.getElementById('score-ai').innerText = aiScore;
-            resetRound(userTeam[0]);
-        }
-    }, 1800);
-}
-
 function resetRound(carrier) {
     gameState = "OFFENSE";
     ballCarrier = carrier;
     ballInAir = false;
     ballVel.set(0, 0, 0);
-    document.getElementById('reticle').style.display = 'none';
-    document.getElementById('status-banner').innerText = "WASD: Move | Mouse: Aim/Stick | Space: Pass/Check | F: Shot Mode";
-    userTeam[0].position.set(0, 0, 12);
-    aiTeam[0].position.set(0, 0, -12);
+    document.getElementById('crosshair').style.display = 'none';
+    userTeam[0].position.set(0, 0, 15);
+    aiTeam[0].position.set(0, 0, -15);
+    aiGoalie.position.set(0, 0, -HALF_L + 6);
 }
 
-// --- MAIN LOOP ---
+// --- AI LOGIC (DEFENDERS & TEAMMATES) ---
+function updateAI(timeScale) {
+    const ballPos = ballCarrier ? ballCarrier.position : ball.position;
+
+    // 1. Teammates move to get open
+    userTeam.forEach((p, idx) => {
+        if (idx !== activeUserIdx) {
+            const openTarget = new THREE.Vector3(
+                (idx === 1 ? 12 : -12) + Math.sin(Date.now() * 0.002 + idx) * 5,
+                0,
+                -10 + Math.cos(Date.now() * 0.002) * 8
+            );
+            const dir = new THREE.Vector3().subVectors(openTarget, p.position).normalize();
+            p.position.add(dir.multiplyScalar(0.12 * timeScale));
+        }
+    });
+
+    // 2. Identify Closest AI Defender to Ball Carrier
+    let closestDefenderIdx = 0;
+    let minDist = 999;
+    aiTeam.forEach((defender, idx) => {
+        const d = defender.position.distanceTo(ballPos);
+        if (d < minDist) { minDist = d; closestDefenderIdx = idx; }
+    });
+
+    // 3. Pursuing Defender (Slightly slower than player)
+    aiTeam.forEach((defender, idx) => {
+        if (idx === closestDefenderIdx) {
+            // Primary Pursuer - Slightly slower than user (0.17 vs 0.22)
+            const dir = new THREE.Vector3().subVectors(ballPos, defender.position).normalize();
+            defender.position.add(dir.multiplyScalar(0.17 * timeScale));
+
+            // Check Stick Logic
+            if (defender.position.distanceTo(userTeam[activeUserIdx].position) < 1.6 && ballCarrier === userTeam[activeUserIdx]) {
+                if (Math.random() < 0.02) { // Dislodge ball
+                    ballCarrier = defender;
+                    gameState = "DEFENSE";
+                    document.getElementById('status-banner').innerText = "BALL CHECKED! AI took possession!";
+                }
+            }
+        } else {
+            // Mark assigned teammates
+            const userTeammate = userTeam[(idx + activeUserIdx) % userTeam.length];
+            const dir = new THREE.Vector3().subVectors(userTeammate.position, defender.position).normalize();
+            defender.position.add(dir.multiplyScalar(0.14 * timeScale));
+        }
+    });
+
+    // 4. Goalie Side-to-Side Block Movement
+    const goalieTargetX = Math.sin(Date.now() * 0.003) * 1.8;
+    aiGoalie.position.x += (goalieTargetX - aiGoalie.position.x) * (0.05 * timeScale);
+}
+
+// --- MAIN GAME LOOP ---
 let lastTime = performance.now();
 
 function animate(time) {
@@ -358,65 +377,60 @@ function animate(time) {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
 
-    // Period & Time Engine
+    // Time Scale for Bullet-Time Shot Mode
+    const timeScale = gameState === "SHOT_MODE" ? 0.2 : 1.0;
+
+    // Clock Engine
     if (clockTime > 0) {
-        clockTime -= delta;
+        clockTime -= delta * timeScale;
         const mins = Math.floor(clockTime / 60).toString().padStart(2, '0');
         const secs = Math.floor(clockTime % 60).toString().padStart(2, '0');
         document.getElementById('game-clock').innerText = `${mins}:${secs}`;
     } else if (period < 3) {
-        period++;
-        clockTime = 120;
+        period++; clockTime = 120;
         document.getElementById('game-period').innerText = `${period} / 3`;
         resetRound(userTeam[0]);
     }
 
-    // Active User Movement
+    // WASD Movement
     const player = userTeam[activeUserIdx];
     const moveSpeed = 0.22;
+    if (keyState['KeyW']) player.position.z -= moveSpeed;
+    if (keyState['KeyS']) player.position.z += moveSpeed;
+    if (keyState['KeyA']) player.position.x -= moveSpeed;
+    if (keyState['KeyD']) player.position.x += moveSpeed;
 
-    if (gameState === "OFFENSE" || gameState === "DEFENSE") {
-        if (keyState['KeyW']) player.position.z -= moveSpeed;
-        if (keyState['KeyS']) player.position.z += moveSpeed;
-        if (keyState['KeyA']) player.position.x -= moveSpeed;
-        if (keyState['KeyD']) player.position.x += moveSpeed;
-
-        // Stick Protection / Check Rotation by Mouse X
-        if (player.stick) {
-            const sideTilt = (groundTarget.x - player.position.x) * 0.06;
-            player.stick.rotation.z = Math.max(-0.9, Math.min(0.9, sideTilt));
-        }
+    // Stick Protection Tilt by Mouse Position
+    if (player.stick) {
+        const sideTilt = (groundTarget.x - player.position.x) * 0.06;
+        player.stick.rotation.z = Math.max(-0.9, Math.min(0.9, sideTilt));
     }
 
-    // Defensive Checking
-    if (gameState === "DEFENSE" && keyState['Space']) {
-        const enemy = aiTeam[0];
-        if (player.position.distanceTo(enemy.position) < 2.0) {
-            // Dislodge ball
-            ballCarrier = player;
-            gameState = "OFFENSE";
-            document.getElementById('status-banner').innerText = "SUCCESSFUL CHECK! You got possession!";
-        }
-    }
+    // Update AI
+    updateAI(timeScale);
 
-    // Ball Mechanics
+    // Ball Dynamics
     if (!ballInAir && ballCarrier) {
         ball.position.copy(ballCarrier.position).add(new THREE.Vector3(0.3, 1.2, -0.3));
     } else if (ballInAir) {
-        ball.position.add(ballVel);
-        if (ballVel.y > -0.2) ballVel.y -= 0.008; // Gravity Arc
+        ball.position.add(ballVel.clone().multiplyScalar(timeScale));
+        ballVel.y -= 0.008 * timeScale;
 
-        // Catch Transfer
+        // Catching Ball
         userTeam.forEach((p, idx) => {
-            if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0.1) {
-                ballCarrier = p;
-                activeUserIdx = idx;
-                ballInAir = false;
-                gameState = "OFFENSE";
+            if (p.position.distanceTo(ball.position) < 1.6 && ballVel.y < 0) {
+                ballCarrier = p; activeUserIdx = idx; ballInAir = false; gameState = "OFFENSE";
             }
         });
 
-        // User Goal Score
+        // Goalie Save Check
+        if (ball.position.distanceTo(aiGoalie.position) < 1.5) {
+            ballInAir = false;
+            ballCarrier = aiGoalie;
+            document.getElementById('status-banner').innerText = "SHOT BLOCKED BY GOALIE!";
+        }
+
+        // User Scoring Check
         if (ball.position.z <= aiGoal.position.z + 0.8 && Math.abs(ball.position.x) < 2.2 && ball.position.y < 3.2) {
             userScore++;
             document.getElementById('score-user').innerText = userScore;
@@ -424,52 +438,26 @@ function animate(time) {
         }
     }
 
-    // Goalie First Person Save Intercept Mechanics
-    if (gameState === "GOALIE_SAVE") {
-        const reticleDist = new THREE.Vector2((mousePos.x * window.innerWidth/2), (mousePos.y * window.innerHeight/2));
-        if (reticleDist.length() < 90 && ball.position.z > HALF_L - 10) {
-            // Saved!
-            document.getElementById('status-banner').innerText = "GREAT SAVE! Ball recovered!";
-            resetRound(userTeam[0]);
-        }
-    }
-
-    // Shot Meter Cycle
+    // Pass / Shot Meter Charging
     if (meterCharging) {
         meterPower += meterDir * 2.8;
         if (meterPower >= 100 || meterPower <= 0) meterDir *= -1;
         document.getElementById('meter-bar').style.width = meterPower + '%';
     }
 
-    // AI Automation
-    if (gameState === "DEFENSE" && ballCarrier === aiTeam[0]) {
-        const dir = new THREE.Vector3(0, 0, HALF_L - 10).sub(aiTeam[0].position).normalize();
-        aiTeam[0].position.add(dir.multiplyScalar(0.12));
-
-        if (aiTeam[0].position.z > 0 && Math.random() < 0.008) {
-            triggerEnemyShot();
-        }
-    }
-
     // Dynamic Camera Modes
     if (gameState === "SHOT_MODE") {
-        // 1st Person Shooter View
         camera.position.copy(player.position).add(new THREE.Vector3(0, 1.7, 0));
-        camera.lookAt(0, 1.6, aiGoal.position.z);
-    } else if (gameState === "GOALIE_SAVE") {
-        // 1st Person Goalie View
-        camera.position.set(0, 1.8, HALF_L - 5);
-        camera.lookAt(0, 1.5, 0);
+        camera.lookAt(0, 1.6, -HALF_L + 6);
     } else {
-        // Third Person Madden Follow View
-        camera.position.copy(player.position).add(new THREE.Vector3(0, 13, 17));
+        const camOffset = new THREE.Vector3(0, 13, 17);
+        camera.position.copy(player.position).add(camOffset);
         camera.lookAt(player.position.x, 1, player.position.z - 5);
     }
 
     renderer.render(scene, camera);
 }
 
-// Window Resizing
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
