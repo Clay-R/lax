@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Lacrosse Showdown</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body { background: #000; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        
+        /* HUD UI Overlay */
+        #hud {
+            position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 20px; background: rgba(15, 23, 42, 0.85);
+            padding: 12px 25px; border-radius: 12px; border: 2px solid #38bdf8;
+            color: white; font-weight: bold; font-size: 1.1rem; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+        .hud-item { display: flex; flex-direction: column; align-items: center; }
+        .hud-label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
+        
+        /* Controls & Mode Banner */
+        #mode-banner {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.75); color: #f1f5f9; padding: 10px 20px;
+            border-radius: 8px; font-size: 0.9rem; text-align: center; z-index: 10;
+            border: 1px solid #475569; pointer-events: none;
+        }
+
+        /* Shot / Pass Meter UI */
+        #meter-container {
+            position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+            width: 260px; height: 24px; background: #1e293b; border: 2px solid #ffffff;
+            border-radius: 12px; overflow: hidden; display: none; z-index: 20;
+        }
+        #meter-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #ef4444); }
+        #meter-target {
+            position: absolute; left: 70%; width: 15%; height: 100%;
+            background: rgba(34, 197, 94, 0.8); border-left: 2px solid #fff; border-right: 2px solid #fff;
+        }
+
+        /* First Person Crosshair */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            transform: translate(-50%, -50%); border: 2px solid #00ffcc; border-radius: 50%;
+            display: none; pointer-events: none; z-index: 15;
+        }
+        #crosshair::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: #00ffcc; border-radius: 50%; transform: translate(-50%, -50%);
+        }
+    </style>
+    <!-- Three.js 3D Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="hud-item"><span class="hud-label">Home</span><span id="score-user">0</span></div>
+        <div class="hud-item"><span class="hud-label">Period</span><span id="game-period">1 / 3</span></div>
+        <div class="hud-item"><span class="hud-label">Time</span><span id="game-clock">02:00</span></div>
+        <div class="hud-item"><span class="hud-label">Away</span><span id="score-ai">0</span></div>
+    </div>
+
+    <div id="mode-banner">
+        WASD: Move | Mouse: Aim/Protect Stick | Space: Pass/Check | F: First Person Shot (Enemy Half)
+    </div>
+
+    <div id="meter-container">
+        <div id="meter-target"></div>
+        <div id="meter-bar"></div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="canvas-container"></div>
+
+<script>
+// --- GAME STATE & VARS ---
+const GAME_CONFIG = { fieldWidth: 60, fieldLength: 110, thirdDuration: 120 };
+let period = 1, clockTime = GAME_CONFIG.thirdDuration, userScore = 0, aiScore = 0;
+let gameState = "OFFENSE"; // OFFENSE, SHOT_MODE, DEFENSE, GOALIE_SAVE
+let meterPower = 0, meterCharging = false, meterDirection = 1;
+let keyState = {}, mousePos = new THREE.Vector2(), groundTarget = new THREE.Vector3();
+
+// Three.js Core Setup
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+container.appendChild(renderer.domElement);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+sun.position.set(40, 80, 20);
+sun.castShadow = true;
+scene.add(sun);
+
+// --- FIELD & GOALS BUILDER ---
+const fieldGeo = new THREE.PlaneGeometry(GAME_CONFIG.fieldWidth, GAME_CONFIG.fieldLength);
+const fieldMat = new THREE.MeshStandardMaterial({ color: 0x15803d });
+const field = new THREE.Mesh(fieldGeo, fieldMat);
+field.rotation.x = -Math.PI / 2;
+field.receiveShadow = true;
+scene.add(field);
+
+// Target Ring on Ground
+const ringGeo = new THREE.RingGeometry(0.8, 1.0, 32);
+const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, side: THREE.DoubleSide });
+const targetRing = new THREE.Mesh(ringGeo, ringMat);
+targetRing.rotation.x = -Math.PI / 2;
+targetRing.position.y = 0.05;
+scene.add(targetRing);
+
+function createGoal(zPos) {
+    const goalGroup = new THREE.Group();
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0xef4444 });
+    
+    const postGeo = new THREE.CylinderGeometry(0.1, 0.1, 3);
+    const leftPost = new THREE.Mesh(postGeo, frameMat); leftPost.position.set(-2, 1.5, 0);
+    const rightPost = new THREE.Mesh(postGeo, frameMat); rightPost.position.set(2, 1.5, 0);
+    
+    const barGeo = new THREE.CylinderGeometry(0.1, 0.1, 4.2);
+    const topBar = new THREE.Mesh(barGeo, frameMat);
+    topBar.rotation.z = Math.PI / 2; topBar.position.set(0, 3, 0);
+    
+    goalGroup.add(leftPost, rightPost, topBar);
+    goalGroup.position.set(0, 0, zPos);
+    return goalGroup;
+}
+const userGoal = createGoal(GAME_CONFIG.fieldLength / 2 - 5);
+const aiGoal = createGoal(-GAME_CONFIG.fieldLength / 2 + 5);
+scene.add(userGoal, aiGoal);
+
+// --- PLAYER & BALL ENTITIES ---
+function createPlayerMesh(color) {
+    const group = new THREE.Group();
+    const bodyGeo = new THREE.CapsuleGeometry(0.6, 1.2, 8, 16);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: color });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 1.2;
+    body.castShadow = true;
+    group.add(body);
+
+    // Lacrosse Stick Mesh
+    const stickGeo = new THREE.CylinderGeometry(0.04, 0.04, 2.2);
+    const stickMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8 });
+    const stick = new THREE.Mesh(stickGeo, stickMat);
+    stick.position.set(0.6, 1.2, -0.4);
+    stick.rotation.x = Math.PI / 4;
+    group.add(stick);
+    group.stick = stick;
+
+    return group;
+}
+
+const userTeam = [createPlayerMesh(0x2563eb), createPlayerMesh(0x2563eb), createPlayerMesh(0x2563eb)];
+const aiTeam = [createPlayerMesh(0xd97706), createPlayerMesh(0xd97706), createPlayerMesh(0xd97706)];
+
+userTeam.forEach((p, idx) => { p.position.set((idx - 1) * 12, 0, 10); scene.add(p); });
+aiTeam.forEach((p, idx) => { p.position.set((idx - 1) * 12, 0, -10); scene.add(p); });
+
+let activeUserIndex = 0;
+let ballCarrier = userTeam[0];
+
+// Ball
+const ballGeo = new THREE.SphereGeometry(0.25, 16, 16);
+const ballMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+const ball = new THREE.Mesh(ballGeo, ballMat);
+ball.castShadow = true;
+scene.add(ball);
+
+let ballVel = new THREE.Vector3();
+let ballInAir = false;
+
+// --- RAYCASTING FOR MOUSE TARGET ---
+const raycaster = new THREE.Raycaster();
+const planeFloor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+window.addEventListener('mousemove', (e) => {
+    mousePos.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mousePos.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mousePos, camera);
+    raycaster.ray.intersectPlane(planeFloor, groundTarget);
+    targetRing.position.x = groundTarget.x;
+    targetRing.position.z = groundTarget.z;
+});
+
+// --- INPUT LISTENERS ---
+window.addEventListener('keydown', (e) => {
+    keyState[e.code] = true;
+
+    // Toggle First Person Shot View when on AI Half
+    if (e.code === 'KeyF' && ballCarrier === userTeam[activeUserIndex]) {
+        if (userTeam[activeUserIndex].position.z < 0) {
+            if (gameState === "OFFENSE") {
+                gameState = "SHOT_MODE";
+                document.getElementById('crosshair').style.display = 'block';
+            } else if (gameState === "SHOT_MODE") {
+                gameState = "OFFENSE";
+                document.getElementById('crosshair').style.display = 'none';
+            }
+        }
+    }
+
+    if (e.code === 'Space' && !meterCharging && !ballInAir) {
+        meterCharging = true;
+        meterPower = 0;
+        document.getElementById('meter-container').style.display = 'block';
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    keyState[e.code] = false;
+
+    if (e.code === 'Space' && meterCharging) {
+        executePassOrShot();
+        meterCharging = false;
+        document.getElementById('meter-container').style.display = 'none';
+    }
+});
+
+// --- GAME LOGIC FUNCTIONS ---
+function executePassOrShot() {
+    ballInAir = true;
+    const activePlayer = userTeam[activeUserIndex];
+    
+    if (gameState === "SHOT_MODE") {
+        // Shooting at Goal
+        const targetPoint = new THREE.Vector3(groundTarget.x, 1.5, aiGoal.position.z);
+        const dir = new THREE.Vector3().subVectors(targetPoint, activePlayer.position).normalize();
+        const speed = 0.8 + (meterPower / 100) * 0.7;
+        ballVel.copy(dir.multiplyScalar(speed));
+        
+        // Goalie AI Reaction Check
+        setTimeout(() => {
+            if (Math.random() > 0.45 + (meterPower / 200)) {
+                resetBallPosition(userTeam[activeUserIndex]); // Saved
+            }
+        }, 600);
+
+        gameState = "OFFENSE";
+        document.getElementById('crosshair').style.display = 'none';
+    } else {
+        // Passing Mechanics
+        let closestTeammate = null;
+        let minDist = 8.0;
+
+        userTeam.forEach((p, idx) => {
+            if (idx !== activeUserIndex) {
+                const d = p.position.distanceTo(groundTarget);
+                if (d < minDist) { minDist = d; closestTeammate = idx; }
+            }
+        });
+
+        const targetPos = closestTeammate !== null ? userTeam[closestTeammate].position : groundTarget;
+        const dir = new THREE.Vector3().subVectors(targetPos, activePlayer.position).normalize();
+        
+        // Quick tap vs meter hold velocity
+        const speed = meterPower < 15 ? 0.4 : 0.5 + (meterPower / 100) * 0.5;
+        ballVel.copy(dir.multiplyScalar(speed));
+        ballVel.y = meterPower < 15 ? 0.15 : 0.08; // Lob arc on light press
+
+        if (closestTeammate !== null) {
+            activeUserIndex = closestTeammate;
+        }
+    }
+}
+
+function resetBallPosition(carrier) {
+    ballCarrier = carrier;
+    ballInAir = false;
+    ballVel.set(0, 0, 0);
+}
+
+// --- MAIN LOOP ---
+let lastTime = performance.now();
+
+function animate(time) {
+    requestAnimationFrame(animate);
+    const delta = (time - lastTime) / 1000;
+    lastTime = time;
+
+    // Clock Logic
+    if (clockTime > 0) {
+        clockTime -= delta;
+        const mins = Math.floor(clockTime / 60).toString().padStart(2, '0');
+        const secs = Math.floor(clockTime % 60).toString().padStart(2, '0');
+        document.getElementById('game-clock').innerText = `${mins}:${secs}`;
+    }
+
+    // Active Player Controls (WASD)
+    const curPlayer = userTeam[activeUserIndex];
+    const speed = 0.22;
+    if (keyState['KeyW']) curPlayer.position.z -= speed;
+    if (keyState['KeyS']) curPlayer.position.z += speed;
+    if (keyState['KeyA']) curPlayer.position.x -= speed;
+    if (keyState['KeyD']) curPlayer.position.x += speed;
+
+    // Mouse Stick Protection tilt
+    if (curPlayer.stick) {
+        const offset = (groundTarget.x - curPlayer.position.x) * 0.05;
+        curPlayer.stick.rotation.z = Math.max(-0.8, Math.min(0.8, offset));
+    }
+
+    // Ball Dynamics
+    if (!ballInAir && ballCarrier) {
+        ball.position.copy(ballCarrier.position).add(new THREE.Vector3(0.3, 1.2, -0.3));
+    } else if (ballInAir) {
+        ball.position.add(ballVel);
+        ballVel.y -= 0.01; // Gravity
+
+        // Catching Ball
+        userTeam.forEach((p) => {
+            if (p.position.distanceTo(ball.position) < 1.5 && ballVel.y < 0) {
+                resetBallPosition(p);
+            }
+        });
+
+        // Scoring Check
+        if (ball.position.z <= aiGoal.position.z + 1 && Math.abs(ball.position.x) < 2.5) {
+            userScore++;
+            document.getElementById('score-user').innerText = userScore;
+            resetBallPosition(userTeam[0]);
+            userTeam[0].position.set(0, 0, 10);
+        }
+    }
+
+    // Pass / Shot Meter Logic
+    if (meterCharging) {
+        meterPower += meterDirection * 2.5;
+        if (meterPower >= 100 || meterPower <= 0) meterDirection *= -1;
+        document.getElementById('meter-bar').style.width = meterPower + '%';
+    }
+
+    // Camera Modes
+    if (gameState === "SHOT_MODE") {
+        camera.position.copy(curPlayer.position).add(new THREE.Vector3(0, 1.6, 0));
+        camera.lookAt(0, 1.5, aiGoal.position.z);
+    } else {
+        // Madden Style Third-Person Follow Camera
+        const camOffset = new THREE.Vector3(0, 12, 16);
+        camera.position.copy(curPlayer.position).add(camOffset);
+        camera.lookAt(curPlayer.position.x, 1, curPlayer.position.z - 5);
+    }
+
+    renderer.render(scene, camera);
+}
+
+// Window Resizing
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate(performance.now());
+</script>
+</body>
+</html>
