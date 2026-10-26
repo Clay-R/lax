@@ -382,13 +382,14 @@
             this.role = role;
             this.isGoalie = isGoalie;
             this.isControlled = false;
-            this.speed = isGoalie ? 2.5 : 4.2;
+            this.speed = isGoalie ? 2.8 : 4.2;
             this.radius = 14;
             this.stunTimer = 0;
             this.dodgeTimer = 0;
             this.cutTarget = { x: x, y: y };
             this.cutTimer = 0;
             this.isOpen = false;
+            this.goalieClearTimer = 0;
         }
 
         update() {
@@ -418,6 +419,34 @@
                 this.vy = dy * currentSpeed;
 
             } else if (this.isGoalie) {
+                // GOALIE CLEARING PASS AI
+                if (ball.holder === this) {
+                    this.goalieClearTimer++;
+                    if (this.goalieClearTimer > 20) { // ~0.3s pause then throw clearing pass
+                        this.goalieClearTimer = 0;
+                        let teammates = players.filter(p => p.team === this.team && !p.isGoalie);
+                        let target = teammates[Math.floor(Math.random() * teammates.length)];
+                        
+                        if (target) {
+                            ball.holder = null;
+                            ball.pickupCooldown = 30;
+                            let dx = target.x - this.x;
+                            let dy = target.y - this.y;
+                            let dist = Math.hypot(dx, dy) || 1;
+
+                            ball.x = this.x + (dx / dist) * 20;
+                            ball.y = this.y + (dy / dist) * 20;
+                            ball.vx = (dx / dist) * 14;
+                            ball.vy = (dy / dist) * 14;
+
+                            playSound('shot');
+                            addFloatingText("CLEAR PASS!", this.x, this.y - 20, '#00ffcc');
+                        }
+                    }
+                    return;
+                }
+
+                this.goalieClearTimer = 0;
                 const goalX = this.team === 'home' ? FIELD.goalLeftX : FIELD.goalRightX;
                 const targetY = Math.max(340, Math.min(460, ball.y));
                 this.x += (goalX - this.x) * 0.12;
@@ -629,7 +658,7 @@
         if (faceoffTimer <= 0) {
             document.getElementById('faceoffOverlay').style.display = 'none';
             gameState = 'PLAYING';
-            inputGracePeriod = 20; // 20 frames buffer to prevent accidental faceoff clicks turning into shots
+            inputGracePeriod = 20;
 
             let homeMid = players.find(p => p.team === 'home' && p.role === 'mid');
             let awayMid = players.find(p => p.team === 'away' && p.role === 'mid');
@@ -699,9 +728,8 @@
 
         ball.holder = null;
         ball.passTarget = null;
-        ball.pickupCooldown = 30; // 30 frames flight guarantee - no one can scoop during flight
+        ball.pickupCooldown = 30;
 
-        // Spawn ball 30px out in front of shooter's stick
         ball.x = shooter.x + dirX * 30;
         ball.y = shooter.y + dirY * 30;
 
@@ -752,7 +780,6 @@
             return;
         }
 
-        // Pass Target Homing Logic
         if (ball.passTarget) {
             let dx = ball.passTarget.x - ball.x;
             let dy = ball.passTarget.y - ball.y;
@@ -774,21 +801,28 @@
         ball.vx *= 0.98;
         ball.vy *= 0.98;
 
-        // Goalie Save Logic
+        // GOALIE SAVE / DEFLECTION LOGIC
         players.filter(p => p.isGoalie).forEach(goalie => {
             let dist = Math.hypot(goalie.x - ball.x, goalie.y - ball.y);
             if (dist < goalie.radius + ball.radius + 6) {
-                ball.vx = -ball.vx * 0.5;
-                ball.vy = (Math.random() - 0.5) * 8;
-                ball.pickupCooldown = 0;
-                playSound('clack');
-                screenShake = 8;
-                addFloatingText("SAVE!", goalie.x, goalie.y - 20, '#ffcc00');
+                if (Math.random() < 0.4) {
+                    // Goalie catches ball
+                    ball.holder = goalie;
+                    playSound('scoop');
+                    addFloatingText("SAVED & HELD!", goalie.x, goalie.y - 20, '#ffcc00');
+                } else {
+                    // Goalie deflects/rebounds ball
+                    ball.vx = -ball.vx * 0.7;
+                    ball.vy = (Math.random() - 0.5) * 8;
+                    ball.pickupCooldown = 15;
+                    playSound('clack');
+                    screenShake = 8;
+                    addFloatingText("SAVE REBOUND!", goalie.x, goalie.y - 20, '#ffcc00');
+                }
             }
         });
 
-        // Ground Ball Pickup Check (Only when pickupCooldown == 0 and not held)
-        if (ball.pickupCooldown <= 0 && !ball.passTarget) {
+        if (ball.pickupCooldown <= 0 && !ball.passTarget && !ball.holder) {
             players.forEach(p => {
                 if (p.stunTimer > 0) return;
                 let dist = Math.hypot(p.x - ball.x, p.y - ball.y);
@@ -803,14 +837,12 @@
             });
         }
 
-        // Goal Line Detection (+1 Goal)
         if (ball.x < FIELD.goalLeftX && ball.y > 340 && ball.y < 460) {
             scoreGoal('away');
         } else if (ball.x > FIELD.goalRightX && ball.y > 340 && ball.y < 460) {
             scoreGoal('home');
         }
 
-        // Wall Bounces
         if (ball.x < 50 || ball.x > FIELD.width - 50) ball.vx *= -1;
         if (ball.y < 50 || ball.y > FIELD.height - 50) ball.vy *= -1;
     }
@@ -885,7 +917,6 @@
                 banner.style.background = "#00ffcc";
             }
 
-            // Auto Body-Check when running into opponent ball carrier
             if (user && ball.holder && ball.holder.team === 'away') {
                 let cpuCarrier = ball.holder;
                 let dist = Math.hypot(user.x - cpuCarrier.x, user.y - cpuCarrier.y);
@@ -972,13 +1003,44 @@
         ctx.arc(FIELD.goalRightX, 400, 60, 0, Math.PI * 2);
         ctx.stroke();
 
-        ctx.fillStyle = '#333';
-        ctx.fillRect(FIELD.goalLeftX - 15, 340, 15, 120);
-        ctx.fillRect(FIELD.goalRightX, 340, 15, 120);
+        // REDESIGNED 8-BIT GOAL NETS
+        // Left Goal Post & Mesh
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(FIELD.goalLeftX, 340);
+        ctx.lineTo(FIELD.goalLeftX - 25, 340);
+        ctx.lineTo(FIELD.goalLeftX - 25, 460);
+        ctx.lineTo(FIELD.goalLeftX, 460);
+        ctx.stroke();
 
-        ctx.strokeStyle = '#ff0055';
-        ctx.strokeRect(FIELD.goalLeftX - 15, 340, 15, 120);
-        ctx.strokeRect(FIELD.goalRightX, 340, 15, 120);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 1;
+        for (let y = 340; y <= 460; y += 15) {
+            ctx.beginPath();
+            ctx.moveTo(FIELD.goalLeftX, y);
+            ctx.lineTo(FIELD.goalLeftX - 25, y);
+            ctx.stroke();
+        }
+
+        // Right Goal Post & Mesh
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(FIELD.goalRightX, 340);
+        ctx.lineTo(FIELD.goalRightX + 25, 340);
+        ctx.lineTo(FIELD.goalRightX + 25, 460);
+        ctx.lineTo(FIELD.goalRightX, 460);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 1;
+        for (let y = 340; y <= 460; y += 15) {
+            ctx.beginPath();
+            ctx.moveTo(FIELD.goalRightX, y);
+            ctx.lineTo(FIELD.goalRightX + 25, y);
+            ctx.stroke();
+        }
 
         let user = players.find(p => p.isControlled);
         if (user && ball.holder === user && shootCharge > 0) {
