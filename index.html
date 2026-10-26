@@ -273,6 +273,7 @@
 </div>
 
 <script>
+    // --- AUDIO SYNTHESIZER ---
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null;
 
@@ -344,6 +345,7 @@
     let mouse = { x: 0, y: 0, down: false };
     let shootCharge = 0;
     let screenShake = 0;
+    let inputGracePeriod = 0;
 
     const FIELD = {
         width: 1400,
@@ -363,10 +365,8 @@
         x: 700, y: 400, vx: 0, vy: 0,
         holder: null,
         passTarget: null,
-        radius: 5,
-        isFree: true,
-        cooldownPlayer: null,
-        cooldownTimer: 0
+        radius: 6,
+        pickupCooldown: 0
     };
 
     let faceoffProgress = 50;
@@ -382,7 +382,7 @@
             this.role = role;
             this.isGoalie = isGoalie;
             this.isControlled = false;
-            this.speed = isGoalie ? 2.5 : 4.0;
+            this.speed = isGoalie ? 2.5 : 4.2;
             this.radius = 14;
             this.stunTimer = 0;
             this.dodgeTimer = 0;
@@ -420,8 +420,8 @@
             } else if (this.isGoalie) {
                 const goalX = this.team === 'home' ? FIELD.goalLeftX : FIELD.goalRightX;
                 const targetY = Math.max(340, Math.min(460, ball.y));
-                this.x += (goalX - this.x) * 0.1;
-                this.y += (targetY - this.y) * 0.08;
+                this.x += (goalX - this.x) * 0.12;
+                this.y += (targetY - this.y) * 0.1;
                 return;
 
             } else {
@@ -493,12 +493,12 @@
                 let dist = Math.hypot(dx, dy);
 
                 if (dist > 10) {
-                    this.vx = (dx / dist) * (this.speed * 0.75);
-                    this.vy = (dy / dist) * (this.speed * 0.75);
+                    this.vx = (dx / dist) * (this.speed * 0.7);
+                    this.vy = (dy / dist) * (this.speed * 0.7);
                 }
 
                 if (dist < 320 && Math.random() < 0.03) {
-                    shootBall(this, FIELD.goalLeftX, 350 + Math.random() * 100, 11);
+                    shootBall(this, FIELD.goalLeftX, 350 + Math.random() * 100, 12);
                 }
             } else if (ball.holder && ball.holder.team === 'home') {
                 let dx = ball.holder.x - this.x;
@@ -515,8 +515,8 @@
                 let dist = Math.hypot(dx, dy);
 
                 if (dist > 5) {
-                    this.vx = (dx / dist) * (this.speed * 0.7);
-                    this.vy = (dy / dist) * (this.speed * 0.7);
+                    this.vx = (dx / dist) * (this.speed * 0.65);
+                    this.vy = (dy / dist) * (this.speed * 0.65);
                 }
             }
         }
@@ -603,8 +603,8 @@
         ball.vx = 0;
         ball.vy = 0;
         ball.holder = null;
-        ball.cooldownPlayer = null;
-        ball.cooldownTimer = 0;
+        ball.passTarget = null;
+        ball.pickupCooldown = 0;
 
         players.find(p => p.team === 'home' && p.role === 'mid').x = 680;
         players.find(p => p.team === 'home' && p.role === 'mid').y = 400;
@@ -629,6 +629,7 @@
         if (faceoffTimer <= 0) {
             document.getElementById('faceoffOverlay').style.display = 'none';
             gameState = 'PLAYING';
+            inputGracePeriod = 20; // 20 frames buffer to prevent accidental faceoff clicks turning into shots
 
             let homeMid = players.find(p => p.team === 'home' && p.role === 'mid');
             let awayMid = players.find(p => p.team === 'away' && p.role === 'mid');
@@ -671,35 +672,41 @@
 
         if (target) {
             ball.holder = null;
-            ball.isFree = false;
             ball.passTarget = target;
-            ball.cooldownPlayer = user;
-            ball.cooldownTimer = 20;
+            ball.pickupCooldown = 0;
 
             let dx = target.x - user.x;
             let dy = target.y - user.y;
             let dist = Math.hypot(dx, dy) || 1;
 
-            ball.vx = (dx / dist) * 12;
-            ball.vy = (dy / dist) * 12;
+            ball.x = user.x + (dx / dist) * 20;
+            ball.y = user.y + (dy / dist) * 20;
+
+            ball.vx = (dx / dist) * 14;
+            ball.vy = (dy / dist) * 14;
 
             playSound('shot');
             addFloatingText("PASS!", user.x, user.y - 20, '#00ffcc');
         }
     }
 
-    function shootBall(shooter, targetX, targetY, power = 14) {
-        ball.holder = null;
-        ball.isFree = true;
-        ball.cooldownPlayer = shooter;
-        ball.cooldownTimer = 30;
-        
+    function shootBall(shooter, targetX, targetY, power = 15) {
         let dx = targetX - shooter.x;
         let dy = targetY - shooter.y;
         let dist = Math.hypot(dx, dy) || 1;
+        let dirX = dx / dist;
+        let dirY = dy / dist;
 
-        ball.vx = (dx / dist) * power;
-        ball.vy = (dy / dist) * power;
+        ball.holder = null;
+        ball.passTarget = null;
+        ball.pickupCooldown = 30; // 30 frames flight guarantee - no one can scoop during flight
+
+        // Spawn ball 30px out in front of shooter's stick
+        ball.x = shooter.x + dirX * 30;
+        ball.y = shooter.y + dirY * 30;
+
+        ball.vx = dirX * power;
+        ball.vy = dirY * power;
 
         playSound('shot');
         addFloatingText("ROCKET SHOOT!", shooter.x, shooter.y - 20, '#ffcc00');
@@ -719,6 +726,7 @@
                 if (dist < 40) {
                     if (ball.holder === enemy) {
                         ball.holder = null;
+                        ball.pickupCooldown = 20;
                         ball.vx = (Math.random() - 0.5) * 8;
                         ball.vy = (Math.random() - 0.5) * 8;
                         enemy.stunTimer = 60;
@@ -732,30 +740,29 @@
     }
 
     function updateBall() {
-        if (ball.cooldownTimer > 0) {
-            ball.cooldownTimer--;
-            if (ball.cooldownTimer <= 0) ball.cooldownPlayer = null;
+        if (ball.pickupCooldown > 0) {
+            ball.pickupCooldown--;
         }
 
         if (ball.holder) {
-            ball.x = ball.holder.x + 12;
+            ball.x = ball.holder.x + 14;
             ball.y = ball.holder.y - 6;
             ball.vx = 0;
             ball.vy = 0;
             return;
         }
 
+        // Pass Target Homing Logic
         if (ball.passTarget) {
             let dx = ball.passTarget.x - ball.x;
             let dy = ball.passTarget.y - ball.y;
             let dist = Math.hypot(dx, dy);
 
-            if (dist < 20) {
+            if (dist < 25) {
                 ball.holder = ball.passTarget;
                 setControlledPlayer(ball.passTarget);
                 ball.passTarget = null;
-                ball.cooldownPlayer = null;
-                ball.cooldownTimer = 0;
+                ball.pickupCooldown = 0;
                 playSound('scoop');
                 addFloatingText("CAUGHT!", ball.holder.x, ball.holder.y - 20, '#00ffcc');
                 return;
@@ -764,32 +771,46 @@
 
         ball.x += ball.vx;
         ball.y += ball.vy;
-        ball.vx *= 0.97;
-        ball.vy *= 0.97;
+        ball.vx *= 0.98;
+        ball.vy *= 0.98;
 
-        players.forEach(p => {
-            if (p === ball.cooldownPlayer && ball.cooldownTimer > 0) return;
-
-            let dist = Math.hypot(p.x - ball.x, p.y - ball.y);
-            let scoopRadius = (p.isControlled) ? 35 : 20;
-
-            if (dist < scoopRadius && p.stunTimer <= 0) {
-                ball.holder = p;
-                ball.passTarget = null;
-                ball.cooldownPlayer = null;
-                ball.cooldownTimer = 0;
-                if (p.team === 'home') setControlledPlayer(p);
-                playSound('scoop');
-                addFloatingText("SCOOP!", p.x, p.y - 20, '#00ffcc');
+        // Goalie Save Logic
+        players.filter(p => p.isGoalie).forEach(goalie => {
+            let dist = Math.hypot(goalie.x - ball.x, goalie.y - ball.y);
+            if (dist < goalie.radius + ball.radius + 6) {
+                ball.vx = -ball.vx * 0.5;
+                ball.vy = (Math.random() - 0.5) * 8;
+                ball.pickupCooldown = 0;
+                playSound('clack');
+                screenShake = 8;
+                addFloatingText("SAVE!", goalie.x, goalie.y - 20, '#ffcc00');
             }
         });
 
+        // Ground Ball Pickup Check (Only when pickupCooldown == 0 and not held)
+        if (ball.pickupCooldown <= 0 && !ball.passTarget) {
+            players.forEach(p => {
+                if (p.stunTimer > 0) return;
+                let dist = Math.hypot(p.x - ball.x, p.y - ball.y);
+                let scoopRadius = p.isControlled ? 35 : 22;
+
+                if (dist < scoopRadius) {
+                    ball.holder = p;
+                    if (p.team === 'home') setControlledPlayer(p);
+                    playSound('scoop');
+                    addFloatingText("SCOOP!", p.x, p.y - 20, '#00ffcc');
+                }
+            });
+        }
+
+        // Goal Line Detection (+1 Goal)
         if (ball.x < FIELD.goalLeftX && ball.y > 340 && ball.y < 460) {
             scoreGoal('away');
         } else if (ball.x > FIELD.goalRightX && ball.y > 340 && ball.y < 460) {
             scoreGoal('home');
         }
 
+        // Wall Bounces
         if (ball.x < 50 || ball.x > FIELD.width - 50) ball.vx *= -1;
         if (ball.y < 50 || ball.y > FIELD.height - 50) ball.vy *= -1;
     }
@@ -833,6 +854,7 @@
 
     function update() {
         if (screenShake > 0) screenShake--;
+        if (inputGracePeriod > 0) inputGracePeriod--;
 
         if (gameState === 'FACEOFF') {
             updateFaceoff();
@@ -861,6 +883,22 @@
             } else {
                 banner.innerText = "LOOSE BALL: RUN OVER BALL TO SCOOP!";
                 banner.style.background = "#00ffcc";
+            }
+
+            // Auto Body-Check when running into opponent ball carrier
+            if (user && ball.holder && ball.holder.team === 'away') {
+                let cpuCarrier = ball.holder;
+                let dist = Math.hypot(user.x - cpuCarrier.x, user.y - cpuCarrier.y);
+                if (dist < user.radius + cpuCarrier.radius + 8) {
+                    ball.holder = null;
+                    ball.pickupCooldown = 20;
+                    ball.vx = (Math.random() - 0.5) * 8;
+                    ball.vy = (Math.random() - 0.5) * 8;
+                    cpuCarrier.stunTimer = 60;
+                    playSound('clack');
+                    screenShake = 12;
+                    addFloatingText("STRIPPED!", cpuCarrier.x, cpuCarrier.y - 20, '#ff0055');
+                }
             }
 
             if (keys['Space'] || mouse.down) {
@@ -1051,7 +1089,7 @@
     window.addEventListener('keyup', (e) => {
         keys[e.code] = false;
 
-        if (e.code === 'Space') {
+        if (e.code === 'Space' && inputGracePeriod <= 0) {
             let user = players.find(p => p.isControlled);
             if (user && ball.holder === user) {
                 shootBall(user, FIELD.goalRightX, 360 + Math.random() * 80, 10 + shootCharge * 0.4);
@@ -1072,7 +1110,7 @@
     });
 
     canvas.addEventListener('mouseup', (e) => {
-        if (e.button === 0) {
+        if (e.button === 0 && inputGracePeriod <= 0) {
             mouse.down = false;
             let user = players.find(p => p.isControlled);
             if (user && ball.holder === user) {
@@ -1094,9 +1132,11 @@
         e.preventDefault();
         initAudio();
         tapFaceoff();
-        let user = players.find(p => p.isControlled);
-        if (user && ball.holder === user) {
-            shootBall(user, FIELD.goalRightX, 360 + Math.random() * 80, 14);
+        if (inputGracePeriod <= 0) {
+            let user = players.find(p => p.isControlled);
+            if (user && ball.holder === user) {
+                shootBall(user, FIELD.goalRightX, 360 + Math.random() * 80, 14);
+            }
         }
     });
 
