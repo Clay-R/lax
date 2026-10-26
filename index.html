@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Retro Lax Arcade 2D</title>
+    <title>Retro Lax Bowl 2D</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
         body {
@@ -18,12 +18,12 @@
             overflow: hidden;
         }
 
-        /* Retro HUD Header */
+        /* Scoreboard Header */
         #hud {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            width: 800px;
+            width: 900px;
             background: #111827;
             border: 3px solid #38bdf8;
             border-bottom: none;
@@ -45,7 +45,7 @@
 
         /* Retro Status Bar */
         #status-bar {
-            width: 800px;
+            width: 900px;
             background: #111827;
             border: 3px solid #38bdf8;
             border-top: none;
@@ -57,34 +57,34 @@
             font-weight: bold;
         }
 
-        /* Charge Meter Overlay */
+        /* Meter Bar */
         #meter-container {
             position: absolute;
-            bottom: 60px;
-            width: 260px;
-            height: 18px;
+            bottom: 65px;
+            width: 280px;
+            height: 20px;
             background: #0f172a;
             border: 2px solid #ffffff;
-            border-radius: 9px;
+            border-radius: 10px;
             overflow: hidden;
             display: none;
-            box-shadow: 0 0 10px #38bdf8;
+            box-shadow: 0 0 12px #38bdf8;
         }
         #meter-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #22c55e, #ef4444); }
 
-        /* Retro Banner Popups */
+        /* Popups */
         #popup-effect {
             position: absolute;
             top: 45%;
             left: 50%;
             transform: translate(-50%, -50%) scale(0.8);
-            font-size: 2.8rem;
+            font-size: 3rem;
             font-weight: 900;
             color: #facc15;
-            text-shadow: 3px 3px 0px #000, 0 0 15px #facc15;
+            text-shadow: 3px 3px 0px #000, 0 0 20px #facc15;
             opacity: 0;
             pointer-events: none;
-            transition: all 0.25s ease-out;
+            transition: all 0.2s ease-out;
             text-align: center;
             z-index: 50;
         }
@@ -97,57 +97,54 @@
 <body>
 
     <div id="hud">
-        <div class="score-box"><div class="score-label">HOME (YOU)</div><div id="score-user" class="score-val">0</div></div>
+        <div class="score-box"><div class="score-label">HOME (BLUE)</div><div id="score-user" class="score-val">0</div></div>
         <div class="score-box"><div class="score-label">PERIOD</div><div id="game-period" class="score-val">1 / 3</div></div>
         <div class="score-box"><div class="score-label">CLOCK</div><div id="game-clock" class="score-val">02:00</div></div>
-        <div class="score-box"><div class="score-label">AWAY (AI)</div><div id="score-ai" class="score-val">0</div></div>
+        <div class="score-box"><div class="score-label">AWAY (ORANGE)</div><div id="score-ai" class="score-val">0</div></div>
     </div>
 
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <canvas id="gameCanvas" width="900" height="500"></canvas>
 
     <div id="status-bar">
-        WASD: Move | Mouse: Aim Crosshair | Space: Hold to Pass / Check | F: Shoot on Goal
+        WASD: Move | Mouse: Aim | Space (Hold/Release): Pass or Shoot | F: Quick Shot
     </div>
 
     <div id="meter-container"><div id="meter-bar"></div></div>
     <div id="popup-effect">GOAL!</div>
 
 <script>
-// --- CANVAS & GAME ENGINE SETUP ---
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-const CW = canvas.width;  // 800
-const CH = canvas.height; // 600
+const CW = canvas.width;  // 900
+const CH = canvas.height; // 500
 
-// Field Markings Constants
-const GOAL_TOP_Y = 60;
-const GOAL_BOT_Y = CH - 60;
-const GOAL_WIDTH = 70;
-const CREASE_RADIUS = 50;
+const GOAL_LEFT_X = 50;
+const GOAL_RIGHT_X = CW - 50;
+const GOAL_HEIGHT = 90;
 
 let period = 1, clockTime = 120, userScore = 0, aiScore = 0;
-let gameState = "OFFENSE"; // OFFENSE, DEFENSE
+let gameState = "OFFENSE";
 let meterPower = 0, meterCharging = false, meterDir = 1;
 let keyState = {}, mousePos = { x: CW / 2, y: CH / 2 };
 
-// --- ENTITIES ---
+// --- PLAYER CLASS ---
 class Player {
-    constructor(x, y, team, isGoalie = false, id = 0) {
+    constructor(x, y, team, isGoalie = false, number = 1) {
         this.x = x;
         this.y = y;
-        this.team = team; // 'user' or 'ai'
+        this.team = team;
         this.isGoalie = isGoalie;
-        this.id = id;
-        this.radius = 14;
-        this.speed = isGoalie ? 2.5 : 3.6;
-        this.color = team === 'user' ? '#2563eb' : '#d97706';
+        this.number = number;
+        this.radius = 15;
+        this.speed = isGoalie ? 2.2 : 3.4;
+        this.color = team === 'user' ? '#2563eb' : '#ea580c';
     }
 
     draw() {
         ctx.save();
         
-        // Body Circle
+        // Base Player Circle
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
         ctx.fillStyle = this.color;
@@ -156,18 +153,18 @@ class Player {
         ctx.strokeStyle = '#ffffff';
         ctx.stroke();
 
-        // Helmet/Visor Direction
+        // Helmet Line
         ctx.beginPath();
-        ctx.arc(this.x, this.y - 2, 6, 0, Math.PI * 2);
+        ctx.arc(this.x + (this.team === 'user' ? 4 : -4), this.y, 6, 0, Math.PI * 2);
         ctx.fillStyle = '#0f172a';
         ctx.fill();
 
-        // Goalie distinction banner
-        if (this.isGoalie) {
-            ctx.fillStyle = '#facc15';
-            ctx.font = 'bold 10px sans-serif';
-            ctx.fillText("G", this.x - 3, this.y + 4);
-        }
+        // Jersey Number
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.isGoalie ? "G" : this.number.toString(), this.x, this.y);
 
         ctx.restore();
     }
@@ -175,34 +172,33 @@ class Player {
 
 // Teams Setup
 const userTeam = [
-    new Player(CW / 2, CH - 150, 'user', false, 0),
-    new Player(CW / 2 - 140, CH - 220, 'user', false, 1),
-    new Player(CW / 2 + 140, CH - 220, 'user', false, 2)
+    new Player(200, CH / 2, 'user', false, 10),
+    new Player(150, CH / 2 - 120, 'user', false, 7),
+    new Player(150, CH / 2 + 120, 'user', false, 22)
 ];
-const userGoalie = new Player(CW / 2, GOAL_BOT_Y, 'user', true, 3);
+const userGoalie = new Player(GOAL_LEFT_X, CH / 2, 'user', true, 1);
 
 const aiTeam = [
-    new Player(CW / 2, 180, 'ai', false, 0),
-    new Player(CW / 2 - 140, 220, 'ai', false, 1),
-    new Player(CW / 2 + 140, 220, 'ai', false, 2)
+    new Player(CW - 200, CH / 2, 'ai', false, 12),
+    new Player(CW - 150, CH / 2 - 120, 'ai', false, 8),
+    new Player(CW - 150, CH / 2 + 120, 'ai', false, 44)
 ];
-const aiGoalie = new Player(CW / 2, GOAL_TOP_Y, 'ai', true, 3);
+const aiGoalie = new Player(GOAL_RIGHT_X, CH / 2, 'ai', true, 30);
 
 let activeUserIdx = 0;
 let ballCarrier = userTeam[0];
 
-// Ball Object
 const ball = {
     x: userTeam[0].x,
     y: userTeam[0].y,
     vx: 0,
     vy: 0,
-    radius: 6,
+    radius: 7,
     isLoose: false,
-    color: '#facc15'
+    trail: []
 };
 
-// --- INPUT LISTENERS ---
+// --- CONTROLS ---
 window.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     mousePos.x = e.clientX - rect.left;
@@ -212,7 +208,6 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('keydown', (e) => {
     keyState[e.code] = true;
 
-    // Direct Quick Shot with F Key when on offense
     if (e.code === 'KeyF' && ballCarrier === userTeam[activeUserIdx]) {
         shootBall(85);
     }
@@ -222,8 +217,7 @@ window.addEventListener('keydown', (e) => {
         meterPower = 0;
         document.getElementById('meter-container').style.display = 'block';
 
-        // Check attempt if on Defense
-        if (gameState === "DEFENSE" || (ballCarrier && ballCarrier.team === 'ai')) {
+        if (ballCarrier && ballCarrier.team === 'ai') {
             performCheck();
         }
     }
@@ -234,10 +228,10 @@ window.addEventListener('keyup', (e) => {
 
     if (e.code === 'Space' && meterCharging) {
         if (ballCarrier === userTeam[activeUserIdx]) {
-            if (userTeam[activeUserIdx].y < CH / 2) {
-                shootBall(meterPower); // Shoot if on attacking half
+            if (userTeam[activeUserIdx].x > CW / 2) {
+                shootBall(meterPower);
             } else {
-                passBall(meterPower); // Pass if on defensive half
+                passBall(meterPower);
             }
         }
         meterCharging = false;
@@ -245,7 +239,6 @@ window.addEventListener('keyup', (e) => {
     }
 });
 
-// --- GAME ACTIONS & POPUPS ---
 function triggerPopup(text) {
     const pop = document.getElementById('popup-effect');
     pop.innerText = text;
@@ -266,7 +259,7 @@ function passBall(power) {
 
     const target = nearestTeammate ? nearestTeammate : mousePos;
     const angle = Math.atan2(target.y - ball.y, target.x - ball.x);
-    const speed = 7 + (power / 100) * 7;
+    const speed = 7 + (power / 100) * 8;
 
     ballCarrier = null;
     ball.isLoose = true;
@@ -275,8 +268,7 @@ function passBall(power) {
 }
 
 function shootBall(power) {
-    const goalTargetX = Math.max(CW / 2 - GOAL_WIDTH / 2 + 5, Math.min(CW / 2 + GOAL_WIDTH / 2 - 5, mousePos.x));
-    const angle = Math.atan2(GOAL_TOP_Y - ball.y, goalTargetX - ball.x);
+    const angle = Math.atan2(mousePos.y - ball.y, GOAL_RIGHT_X - ball.x);
     const speed = 10 + (power / 100) * 8;
 
     ballCarrier = null;
@@ -291,7 +283,7 @@ function performCheck() {
     if (ballCarrier && ballCarrier.team === 'ai') {
         const d = Math.hypot(userP.x - ballCarrier.x, userP.y - ballCarrier.y);
         if (d < 38) {
-            triggerPopup("GREAT CHECK!");
+            triggerPopup("STICK CHECK!");
             dislodgeBall(ballCarrier.x, ballCarrier.y);
         }
     }
@@ -300,27 +292,26 @@ function performCheck() {
 function dislodgeBall(x, y) {
     ballCarrier = null;
     ball.isLoose = true;
-    ball.x = x;
-    ball.y = y;
+    ball.x = x; ball.y = y;
     ball.vx = (Math.random() - 0.5) * 6;
     ball.vy = (Math.random() - 0.5) * 6;
-    document.getElementById('status-bar').innerText = "LOOSE BALL! Run over the ball to scoop possession!";
+    document.getElementById('status-bar').innerText = "LOOSE BALL! Scoop up possession!";
 }
 
 function resetRound(scoringTeam) {
     ball.isLoose = false;
     ball.vx = 0; ball.vy = 0;
 
-    userTeam[0].x = CW / 2; userTeam[0].y = CH - 160;
-    userTeam[1].x = CW / 2 - 140; userTeam[1].y = CH - 220;
-    userTeam[2].x = CW / 2 + 140; userTeam[2].y = CH - 220;
+    userTeam[0].x = 200; userTeam[0].y = CH / 2;
+    userTeam[1].x = 150; userTeam[1].y = CH / 2 - 120;
+    userTeam[2].x = 150; userTeam[2].y = CH / 2 + 120;
 
-    aiTeam[0].x = CW / 2; aiTeam[0].y = 180;
-    aiTeam[1].x = CW / 2 - 140; aiTeam[1].y = 220;
-    aiTeam[2].x = CW / 2 + 140; aiTeam[2].y = 220;
+    aiTeam[0].x = CW - 200; aiTeam[0].y = CH / 2;
+    aiTeam[1].x = CW - 150; aiTeam[1].y = CH / 2 - 120;
+    aiTeam[2].x = CW - 150; aiTeam[2].y = CH / 2 + 120;
 
-    userGoalie.x = CW / 2; userGoalie.y = GOAL_BOT_Y;
-    aiGoalie.x = CW / 2; aiGoalie.y = GOAL_TOP_Y;
+    userGoalie.x = GOAL_LEFT_X; userGoalie.y = CH / 2;
+    aiGoalie.x = GOAL_RIGHT_X; aiGoalie.y = CH / 2;
 
     if (scoringTeam === 'user') {
         ballCarrier = aiTeam[0];
@@ -332,41 +323,32 @@ function resetRound(scoringTeam) {
     }
 }
 
-// --- COLLISION RESOLUTION ---
 function resolveCollisions() {
     const all = [...userTeam, ...aiTeam, userGoalie, aiGoalie];
     for (let i = 0; i < all.length; i++) {
         for (let j = i + 1; j < all.length; j++) {
-            const p1 = all[i];
-            const p2 = all[j];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
+            const p1 = all[i], p2 = all[j];
+            const dx = p2.x - p1.x, dy = p2.y - p1.y;
             const dist = Math.hypot(dx, dy);
             const minDist = p1.radius + p2.radius + 2;
 
             if (dist < minDist && dist > 0) {
                 const overlap = (minDist - dist) / 2;
-                const nx = dx / dist;
-                const ny = dy / dist;
-
-                p1.x -= nx * overlap;
-                p1.y -= ny * overlap;
-                p2.x += nx * overlap;
-                p2.y += ny * overlap;
+                p1.x -= (dx / dist) * overlap;
+                p1.y -= (dy / dist) * overlap;
+                p2.x += (dx / dist) * overlap;
+                p2.y += (dy / dist) * overlap;
             }
         }
     }
 }
 
-// --- AI TACTICS & UPDATES ---
 function updateAI() {
-    const activeUser = userTeam[activeUserIdx];
-
-    // 1. Off-ball User Teammates Break Open into Passing Lanes
+    // 1. Teammates Cutting Upfield
     userTeam.forEach((p, idx) => {
         if (idx !== activeUserIdx) {
-            const targetX = (idx === 1 ? CW / 2 - 160 : CW / 2 + 160) + Math.sin(Date.now() * 0.002 + idx) * 40;
-            const targetY = 200 + Math.cos(Date.now() * 0.002) * 50;
+            const targetX = CW / 2 + 100 + Math.sin(Date.now() * 0.002 + idx) * 60;
+            const targetY = (idx === 1 ? 120 : CH - 120) + Math.cos(Date.now() * 0.002) * 40;
             p.x += (targetX - p.x) * 0.04;
             p.y += (targetY - p.y) * 0.04;
         }
@@ -374,7 +356,6 @@ function updateAI() {
 
     // 2. AI Defenders
     if (ballCarrier && ballCarrier.team === 'user') {
-        // Find closest AI defender
         let closestIdx = 0, minDist = 999;
         aiTeam.forEach((def, i) => {
             const d = Math.hypot(def.x - ballCarrier.x, def.y - ballCarrier.y);
@@ -383,105 +364,81 @@ function updateAI() {
 
         aiTeam.forEach((def, i) => {
             if (i === closestIdx) {
-                // Chase Ball Carrier
                 const angle = Math.atan2(ballCarrier.y - def.y, ballCarrier.x - def.x);
                 def.x += Math.cos(angle) * (def.speed * 0.85);
                 def.y += Math.sin(angle) * (def.speed * 0.85);
 
-                // Check Attempt
                 if (minDist < 30 && Math.random() < 0.02) {
                     triggerPopup("AI CHECKED YOU!");
                     dislodgeBall(ballCarrier.x, ballCarrier.y);
                 }
             } else {
-                // Guard Passing Lanes between Teammates and Goal
                 const teammate = userTeam[(i + activeUserIdx) % userTeam.length];
-                const laneX = (teammate.x + CW / 2) / 2;
-                const laneY = (teammate.y + GOAL_TOP_Y) / 2;
-                def.x += (laneX - def.x) * 0.05;
-                def.y += (laneY - def.y) * 0.05;
+                const blockX = (teammate.x + GOAL_RIGHT_X) / 2;
+                const blockY = teammate.y;
+                def.x += (blockX - def.x) * 0.05;
+                def.y += (blockY - def.y) * 0.05;
             }
         });
 
     } else if (ballCarrier && ballCarrier.team === 'ai') {
-        // AI Attack on User Net
         const carrier = ballCarrier;
-        const angle = Math.atan2(GOAL_BOT_Y - carrier.y, CW / 2 - carrier.x);
+        const angle = Math.atan2(CH / 2 - carrier.y, GOAL_LEFT_X - carrier.x);
         carrier.x += Math.cos(angle) * carrier.speed * 0.7;
         carrier.y += Math.sin(angle) * carrier.speed * 0.7;
 
-        // AI Shoots
-        if (carrier.y > CH / 2 + 50 && Math.random() < 0.015) {
+        if (carrier.x < CW / 2 - 50 && Math.random() < 0.015) {
             triggerPopup("AI SHOT!");
             ballCarrier = null;
             ball.isLoose = true;
-            const shotAngle = Math.atan2(GOAL_BOT_Y - carrier.y, (CW / 2 + (Math.random() - 0.5) * 50) - carrier.x);
+            const shotAngle = Math.atan2((CH / 2 + (Math.random() - 0.5) * 60) - carrier.y, GOAL_LEFT_X - carrier.x);
             ball.vx = Math.cos(shotAngle) * 11;
             ball.vy = Math.sin(shotAngle) * 11;
         }
     } else if (ball.isLoose) {
-        // AI Defender chases loose ground ball
         const def = aiTeam[0];
         const angle = Math.atan2(ball.y - def.y, ball.x - def.x);
         def.x += Math.cos(angle) * def.speed;
         def.y += Math.sin(angle) * def.speed;
     }
 
-    // 3. Goalies Crease Positioning
-    // AI Goalie
-    if (ball.isLoose && ball.vy < 0) {
-        aiGoalie.x += (ball.x - aiGoalie.x) * 0.15;
-    } else {
-        aiGoalie.x += (CW / 2 + Math.sin(Date.now() * 0.003) * 25 - aiGoalie.x) * 0.08;
-    }
-    aiGoalie.x = Math.max(CW / 2 - GOAL_WIDTH / 2, Math.min(CW / 2 + GOAL_WIDTH / 2, aiGoalie.x));
+    // 3. Goalies
+    aiGoalie.y += ((ball.y) - aiGoalie.y) * 0.1;
+    aiGoalie.y = Math.max(CH / 2 - GOAL_HEIGHT / 2 + 10, Math.min(CH / 2 + GOAL_HEIGHT / 2 - 10, aiGoalie.y));
 
-    // User Goalie
-    if (ball.isLoose && ball.vy > 0) {
-        userGoalie.x += (ball.x - userGoalie.x) * 0.15;
-    } else {
-        userGoalie.x += (CW / 2 + Math.sin(Date.now() * 0.003) * 25 - userGoalie.x) * 0.08;
-    }
-    userGoalie.x = Math.max(CW / 2 - GOAL_WIDTH / 2, Math.min(CW / 2 + GOAL_WIDTH / 2, userGoalie.x));
+    userGoalie.y += ((ball.y) - userGoalie.y) * 0.1;
+    userGoalie.y = Math.max(CH / 2 - GOAL_HEIGHT / 2 + 10, Math.min(CH / 2 + GOAL_HEIGHT / 2 - 10, userGoalie.y));
 }
 
-// --- DRAWING THE FIELD ---
 function drawField() {
-    // Pitch Turf
     ctx.fillStyle = '#15803d';
     ctx.fillRect(0, 0, CW, CH);
 
-    // Mown Turf Stripes
+    // Mown Stripes
     ctx.fillStyle = '#166534';
-    for (let y = 0; y < CH; y += 60) {
-        ctx.fillRect(0, y, CW, 30);
+    for (let x = 0; x < CW; x += 80) {
+        ctx.fillRect(x, 0, 40, CH);
     }
 
-    // Boundaries & Midfield Line
+    // Boundaries & Lines
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 4;
     ctx.strokeRect(20, 20, CW - 40, CH - 40);
 
     ctx.beginPath();
-    ctx.moveTo(20, CH / 2); ctx.lineTo(CW - 20, CH / 2);
+    ctx.moveTo(CW / 2, 20); ctx.lineTo(CW / 2, CH - 20);
     ctx.stroke();
 
-    // Center Circle
     ctx.beginPath();
     ctx.arc(CW / 2, CH / 2, 60, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Crease Circles
-    ctx.beginPath(); ctx.arc(CW / 2, GOAL_TOP_Y, CREASE_RADIUS, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.arc(CW / 2, GOAL_BOT_Y, CREASE_RADIUS, 0, Math.PI * 2); ctx.stroke();
-
-    // Goals Frames
+    // Goal Nets
     ctx.fillStyle = '#ef4444';
-    ctx.fillRect(CW / 2 - GOAL_WIDTH / 2, GOAL_TOP_Y - 10, GOAL_WIDTH, 10);
-    ctx.fillRect(CW / 2 - GOAL_WIDTH / 2, GOAL_BOT_Y, GOAL_WIDTH, 10);
+    ctx.fillRect(GOAL_LEFT_X - 10, CH / 2 - GOAL_HEIGHT / 2, 10, GOAL_HEIGHT);
+    ctx.fillRect(GOAL_RIGHT_X, CH / 2 - GOAL_HEIGHT / 2, 10, GOAL_HEIGHT);
 }
 
-// --- MAIN LOOP ---
 let lastTime = performance.now();
 
 function gameLoop(time) {
@@ -489,7 +446,6 @@ function gameLoop(time) {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
 
-    // Game Clock
     if (clockTime > 0) {
         clockTime -= delta;
         const mins = Math.floor(clockTime / 60).toString().padStart(2, '0');
@@ -501,72 +457,67 @@ function gameLoop(time) {
         resetRound('user');
     }
 
-    // User Player Movement (WASD)
+    // User Movement
     const userP = userTeam[activeUserIdx];
     if (keyState['KeyW']) userP.y -= userP.speed;
     if (keyState['KeyS']) userP.y += userP.speed;
     if (keyState['KeyA']) userP.x -= userP.speed;
     if (keyState['KeyD']) userP.x += userP.speed;
 
-    // Bounds Constraint
     userP.x = Math.max(35, Math.min(CW - 35, userP.x));
     userP.y = Math.max(35, Math.min(CH - 35, userP.y));
 
-    // Update AI & Collision Step
     updateAI();
     resolveCollisions();
 
-    // Ball Mechanics & Pickups
+    // Ball Mechanics
     if (ballCarrier) {
-        ball.x = ballCarrier.x + 12;
-        ball.y = ballCarrier.y - 8;
+        ball.x = ballCarrier.x + (ballCarrier.team === 'user' ? 14 : -14);
+        ball.y = ballCarrier.y - 6;
         ball.vx = 0; ball.vy = 0;
         ball.isLoose = false;
     } else if (ball.isLoose) {
         ball.x += ball.vx;
         ball.y += ball.vy;
-        ball.vx *= 0.96; // Friction
+        ball.vx *= 0.96;
         ball.vy *= 0.96;
 
-        // User Catch / Pickup
+        // Pickup Checks
         userTeam.forEach((p, idx) => {
             if (Math.hypot(p.x - ball.x, p.y - ball.y) < p.radius + 10) {
                 ballCarrier = p;
-                activeUserIdx = idx; // Switch control to player who caught ball!
+                activeUserIdx = idx;
                 gameState = "OFFENSE";
-                document.getElementById('status-bar').innerText = "BALL SCOOPED! You have possession!";
+                document.getElementById('status-bar').innerText = "SCOOPED! You have possession!";
             }
         });
 
-        // AI Catch / Pickup
         aiTeam.forEach((p) => {
             if (Math.hypot(p.x - ball.x, p.y - ball.y) < p.radius + 10) {
                 ballCarrier = p;
                 gameState = "DEFENSE";
-                document.getElementById('status-bar').innerText = "AI SCOOPED THE BALL! Press Space near them to check!";
+                document.getElementById('status-bar').innerText = "AI SCOOPED THE BALL!";
             }
         });
 
-        // Goalie Save Checks
+        // Goalie Block Checks
         if (Math.hypot(aiGoalie.x - ball.x, aiGoalie.y - ball.y) < aiGoalie.radius + 10) {
             triggerPopup("GOALIE SAVE!");
-            dislodgeBall(aiGoalie.x, aiGoalie.y + 20);
+            dislodgeBall(aiGoalie.x - 20, aiGoalie.y);
         }
         if (Math.hypot(userGoalie.x - ball.x, userGoalie.y - ball.y) < userGoalie.radius + 10) {
             triggerPopup("GOALIE SAVE!");
-            dislodgeBall(userGoalie.x, userGoalie.y - 20);
+            dislodgeBall(userGoalie.x + 20, userGoalie.y);
         }
 
-        // Scoring Checks
-        // Top Net (User Goal)
-        if (ball.y <= GOAL_TOP_Y && Math.abs(ball.x - CW / 2) < GOAL_WIDTH / 2) {
+        // Score Checks
+        if (ball.x >= GOAL_RIGHT_X && Math.abs(ball.y - CH / 2) < GOAL_HEIGHT / 2) {
             userScore++;
             document.getElementById('score-user').innerText = userScore;
             triggerPopup("GOAL!!!");
             resetRound('user');
         }
-        // Bottom Net (AI Goal)
-        if (ball.y >= GOAL_BOT_Y && Math.abs(ball.x - CW / 2) < GOAL_WIDTH / 2) {
+        if (ball.x <= GOAL_LEFT_X && Math.abs(ball.y - CH / 2) < GOAL_HEIGHT / 2) {
             aiScore++;
             document.getElementById('score-ai').innerText = aiScore;
             triggerPopup("AI SCORED!");
@@ -574,58 +525,51 @@ function gameLoop(time) {
         }
     }
 
-    // Pass / Shot Meter Charging
     if (meterCharging) {
         meterPower += meterDir * 3;
         if (meterPower >= 100 || meterPower <= 0) meterDir *= -1;
         document.getElementById('meter-bar').style.width = meterPower + '%';
     }
 
-    // --- RENDER STEP ---
+    // --- RENDER ---
     drawField();
 
-    // Draw Aim Reticle
+    // Aim Crosshair
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(mousePos.x, mousePos.y, 10, 0, Math.PI * 2);
+    ctx.arc(mousePos.x, mousePos.y, 8, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Draw Active Controlled Player Ring
+    // Controlled Player Ring
     ctx.strokeStyle = '#facc15';
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(userP.x, userP.y, userP.radius + 6, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Draw All Players
+    // Render Players
     userGoalie.draw();
     aiGoalie.draw();
     userTeam.forEach(p => p.draw());
     aiTeam.forEach(p => p.draw());
 
-    // Draw Ball & Carrier Marker
+    // Ball & Carrier Indicator
     ctx.beginPath();
     ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
-    ctx.fillStyle = ball.color;
+    ctx.fillStyle = '#facc15';
     ctx.fill();
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 2;
     ctx.stroke();
 
     if (ballCarrier) {
-        // Pulsing Marker Above Ball Carrier
         ctx.fillStyle = '#facc15';
-        ctx.beginPath();
-        ctx.moveTo(ballCarrier.x, ballCarrier.y - 24);
-        ctx.lineTo(ballCarrier.x - 7, ballCarrier.y - 34);
-        ctx.lineTo(ballCarrier.x + 7, ballCarrier.y - 34);
-        ctx.closePath();
-        ctx.fill();
+        ctx.font = 'bold 10px sans-serif';
+        ctx.fillText("BALL", ballCarrier.x - 12, ballCarrier.y - 22);
     }
 }
 
-// Start Game Loop
 gameLoop(performance.now());
 </script>
 </body>
